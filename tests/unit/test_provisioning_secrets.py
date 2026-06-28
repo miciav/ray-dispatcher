@@ -44,14 +44,27 @@ def test_copy_secrets_pushes_chmods_and_verifies_owner():
     assert any("mkdir -p" in s and "chmod 700" in s for s in _scripts(p.t))  # 0700 dir
     # contents are never printed: no `cat`/`printf` of the secret file itself
     assert not any("cat /home/ubuntu/.ray_dispatcher/secrets" in s for s in _scripts(p.t))
+    assert any("stat" in s for s in _scripts(p.t))  # ownership was actually verified
 
 
 def test_copy_secrets_wrong_owner_raises():
     def results(argv):
         if argv[0] == "sh" and "stat" in argv[2]:
-            return CommandResult(0, "root 600\n", "", 0.0)  # owner mismatch
+            return CommandResult(0, "root\n", "", 0.0)  # owner mismatch
         return CommandResult(0, "", "", 0.0)
 
     secrets = (SecretFile(source="/local/token", remote_name="token"),)
     with pytest.raises(_StepError, match="owned by"):
         _prov(results, secrets=secrets, user="ubuntu")._copy_secrets()
+
+
+def test_copy_secrets_unverifiable_owner_raises():
+    # an empty/unreadable owner must fail closed, not silently skip verification
+    def results(argv):
+        if argv[0] == "sh" and "stat" in argv[2]:
+            return CommandResult(0, "\n", "", 0.0)  # empty owner
+        return CommandResult(0, "", "", 0.0)
+
+    secrets = (SecretFile(source="/local/token", remote_name="token"),)
+    with pytest.raises(_StepError, match="owned by"):
+        _prov(results, secrets=secrets)._copy_secrets()

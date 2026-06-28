@@ -290,7 +290,7 @@ class HostProvisioner:
                 ["sh", "-c", f"stat -c '%U' {qr} 2>/dev/null || stat -f '%Su' {qr}"],
                 f"verify secret {secret.remote_name}",
             ).stdout.strip()
-            if owner and owner != self.host.user:
+            if owner != self.host.user:
                 raise _StepError(
                     f"secret {secret.remote_name!r} on {self.host.host} owned by "
                     f"{owner!r}, expected {self.host.user!r}"
