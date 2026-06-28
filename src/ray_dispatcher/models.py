@@ -10,6 +10,8 @@ import yaml
 from .errors import ModelValidationError
 
 _POSIX_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_EXACT_VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
+_PROJECT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 
 def _is_posix_env_name(name: str) -> bool:
@@ -61,3 +63,47 @@ class Inventory:
             raise ModelValidationError("'hosts' must be a list")
         hosts = tuple(RemoteHost(**entry) for entry in raw_hosts)
         return cls(hosts)
+
+
+@dataclass(frozen=True)
+class SecretFile:
+    source: str
+    remote_name: str
+    env_var: str | None = None
+    mode: int = 0o600
+
+    def __post_init__(self) -> None:
+        if not self.source:
+            raise ModelValidationError("secret source must be non-empty")
+        if not self.remote_name or "/" in self.remote_name or self.remote_name in (".", ".."):
+            raise ModelValidationError(
+                f"secret remote_name must be a bare filename, got {self.remote_name!r}"
+            )
+        if self.env_var is not None and not _is_posix_env_name(self.env_var):
+            raise ModelValidationError(f"invalid secret env_var: {self.env_var!r}")
+
+
+@dataclass(frozen=True)
+class Project:
+    path: str
+    project_id: str
+    python: str
+    uv_version: str
+    secrets: tuple[SecretFile, ...] = ()
+    exclude: tuple[str, ...] = (".venv/", ".git/", "solutions/")
+    dependency_groups: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.path:
+            raise ModelValidationError("project path must be non-empty")
+        if not _PROJECT_ID_RE.match(self.project_id):
+            raise ModelValidationError(f"invalid project_id: {self.project_id!r}")
+        if not _EXACT_VERSION_RE.match(self.python):
+            raise ModelValidationError(f"python must be exact X.Y.Z, got {self.python!r}")
+        if not _EXACT_VERSION_RE.match(self.uv_version):
+            raise ModelValidationError(
+                f"uv_version must be exact X.Y.Z, got {self.uv_version!r}"
+            )
+        names = [s.remote_name for s in self.secrets]
+        if len(names) != len(set(names)):
+            raise ModelValidationError("duplicate secret remote_name in project")
