@@ -6,12 +6,12 @@ import os
 import shlex
 import subprocess
 import time
-
-import fabric
-import paramiko
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
+
+import fabric
+import paramiko
 
 from .errors import DispatcherError, ModelValidationError
 from .models import RemoteHost
@@ -33,7 +33,7 @@ class SshConfig:
     known_hosts_file: str
 
     @classmethod
-    def from_host(cls, host: RemoteHost) -> "SshConfig":
+    def from_host(cls, host: RemoteHost) -> SshConfig:
         known_hosts = _resolve_existing(host.known_hosts_file, "known_hosts file")
         identity = (
             _resolve_existing(host.identity_file, "identity file")
@@ -170,6 +170,32 @@ class SshTransport:
             subprocess.run(argv, check=True, capture_output=True, text=True)
         except subprocess.CalledProcessError as exc:
             raise TransportError(f"rsync failed ({exc.returncode}): {exc.stderr}") from exc
+
+
+def terminate_process_group(
+    transport: Transport,
+    pgid: int,
+    *,
+    grace_s: float = 10.0,
+    poll_s: float = 0.5,
+    now: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+) -> bool:
+    """SIGTERM the remote process group, wait up to grace_s, then SIGKILL.
+    Returns True once a probe confirms the group is gone (spec §8.1)."""
+
+    def gone() -> bool:
+        return transport.run(["kill", "-0", f"-{pgid}"]).returncode != 0
+
+    transport.run(["kill", "-TERM", f"-{pgid}"])
+    deadline = now() + grace_s
+    while now() < deadline:
+        if gone():
+            return True
+        sleep(poll_s)
+    transport.run(["kill", "-KILL", f"-{pgid}"])
+    sleep(poll_s)
+    return gone()
 
 
 def build_connection(cfg: SshConfig) -> fabric.Connection:
