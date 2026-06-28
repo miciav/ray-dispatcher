@@ -13,7 +13,9 @@ import json
 import shlex
 
 from .digests import environment_digest, runner_digest, source_digest
-from .models import Project, RemoteHost
+from .errors import HostInUseError
+from .locking import HeartbeatThread, SessionLock
+from .models import HostProvisioningResult, Project, RemoteHost
 from .ssh import CommandResult, Transport
 
 # Base sync flags shared by environment_digest and the uv sync invocation (§6.3.6).
@@ -295,3 +297,32 @@ class HostProvisioner:
                     f"secret {secret.remote_name!r} on {self.host.host} owned by "
                     f"{owner!r}, expected {self.host.user!r}"
                 )
+
+    def provision(
+        self,
+    ) -> tuple[HostProvisioningResult, tuple[SessionLock, HeartbeatThread] | None]:
+        lock = SessionLock(self.t, self.session_id)
+        try:
+            lock.acquire()
+        except HostInUseError as exc:
+            return HostProvisioningResult(self.host.host, False, None, None, error=str(exc)), None
+        hb = HeartbeatThread(lock, interval_s=self.heartbeat_interval_s)
+        hb.start()
+        source_dig: str | None = None
+        env_dig: str | None = None
+        try:
+            self.layout = self._resolve_layout()
+            self._preflight()
+            uv = self._install_uv()
+            self._install_python(uv)
+            source_dig = self._sync_source()
+            env_dig = self._publish_env(uv)
+            self._install_runner()
+            self._copy_secrets()
+        except Exception as exc:  # noqa: BLE001 — any step failure marks the host unhealthy
+            hb.stop()  # stop the heartbeat BEFORE releasing (avoids a beat/rm race)
+            lock.release()
+            return HostProvisioningResult(
+                self.host.host, False, source_dig, env_dig, error=str(exc)
+            ), None
+        return HostProvisioningResult(self.host.host, True, source_dig, env_dig), (lock, hb)
