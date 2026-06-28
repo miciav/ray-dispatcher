@@ -132,11 +132,13 @@ class HostProvisioner:
     def _install_uv(self) -> str:
         ver = self.project.uv_version
         uv = self._lo.uv_bin(ver)
-        if not self.force and ver in self.t.run([uv, "--version"]).stdout:
+        if not self.force and ver in self.t.run([uv, "--version"]).stdout.split():
             return uv
         install_dir = f"{self._lo.uv_root}/{ver}"
         # ponytail: official version-pinned installer; exact on-disk layout
         #           (UV_INSTALL_DIR -> <dir>/uv) is reconfirmed by the Phase 7 e2e.
+        # ver is safe in the URL: Project validates uv_version as r"\d+\.\d+\.\d+"
+        # (fullmatch) -> only digits and dots, no shell metacharacters (§7).
         script = (
             f"set -e; mkdir -p {shlex.quote(install_dir)}; "
             f"curl -LsSf https://astral.sh/uv/{ver}/install.sh "
@@ -144,7 +146,7 @@ class HostProvisioner:
         )
         self._checked(["sh", "-c", script], "uv install")
         reported = self._checked([uv, "--version"], "uv version check").stdout
-        if ver not in reported:
+        if ver not in reported.split():
             raise _StepError(
                 f"installed uv on {self.host.host} reports {reported.strip()!r}, expected {ver}"
             )

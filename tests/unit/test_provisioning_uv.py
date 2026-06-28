@@ -73,3 +73,27 @@ def test_install_uv_wrong_version_after_install_raises():
 
     with pytest.raises(_StepError, match="expected 0.11.25"):
         _prov(results, force=True)._install_uv()
+
+
+def test_install_uv_does_not_skip_on_prefix_version_match():
+    # exact pin: requesting 0.11.2 must NOT be satisfied by an installed 0.11.25
+    state = {"downloaded": False}
+
+    def results(argv):
+        if argv[-1] == "--version":
+            return CommandResult(0, "uv 0.11.25", "", 0.0)  # a different, longer version
+        if argv[0] == "sh" and "astral.sh" in argv[2]:
+            state["downloaded"] = True
+            return CommandResult(0, "", "", 0.0)
+        return CommandResult(0, "", "", 0.0)
+
+    p = HostProvisioner(
+        FakeTransport(run_results=results),
+        Project(path="/local/proj", project_id="dfaas", python="3.10.18", uv_version="0.11.2"),
+        RemoteHost(host="10.0.0.1", user="ubuntu"),
+        runner_path="x", session_id="s",
+    )
+    p.layout = RemoteLayout("/home/ubuntu", "dfaas")
+    with pytest.raises(_StepError, match="expected 0.11.2"):
+        p._install_uv()
+    assert state["downloaded"] is True  # it did NOT skip — it re-downloaded
