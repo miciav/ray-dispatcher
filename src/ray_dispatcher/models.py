@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 
 import yaml
 
 from .errors import ModelValidationError
+from .paths import normalize_relative
 
 _POSIX_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _EXACT_VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
 _PROJECT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+_JOB_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 
 def _is_posix_env_name(name: str) -> bool:
@@ -107,3 +110,60 @@ class Project:
         names = [s.remote_name for s in self.secrets]
         if len(names) != len(set(names)):
             raise ModelValidationError("duplicate secret remote_name in project")
+
+
+@dataclass(frozen=True)
+class InputSpec:
+    source: str                       # absolute or Project.path-relative local path
+    destination: str                  # normalized run-root-relative POSIX path
+
+    def __post_init__(self) -> None:
+        if not self.source:
+            raise ModelValidationError("input source must be non-empty")
+        object.__setattr__(
+            self, "destination", normalize_relative(self.destination, field="input destination")
+        )
+
+
+@dataclass(frozen=True)
+class OutputSpec:
+    source: str                       # normalized run-root-relative POSIX path
+    destination: str | None = None    # relative to the job's local outputs dir
+    required: bool = True
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "source", normalize_relative(self.source, field="output source")
+        )
+        if self.destination is not None:
+            object.__setattr__(
+                self,
+                "destination",
+                normalize_relative(self.destination, field="output destination"),
+            )
+
+
+@dataclass(frozen=True)
+class Job:
+    id: str
+    command: tuple[str, ...]
+    inputs: tuple[InputSpec, ...] = ()
+    outputs: tuple[OutputSpec, ...] = ()
+    env: Mapping[str, str] = field(default_factory=dict)
+    timeout_s: float | None = None
+    cwd: str = "."
+
+    def __post_init__(self) -> None:
+        if not _JOB_ID_RE.match(self.id):
+            raise ModelValidationError(f"invalid job id: {self.id!r}")
+        if not self.command:
+            raise ModelValidationError("command must be non-empty")
+        for part in self.command:
+            if "\x00" in part:
+                raise ModelValidationError("command parts must not contain NUL bytes")
+        for key in self.env:
+            if not _is_posix_env_name(key):
+                raise ModelValidationError(f"invalid env key: {key!r}")
+        if self.timeout_s is not None and self.timeout_s <= 0:
+            raise ModelValidationError("timeout_s must be > 0 when set")
+        object.__setattr__(self, "cwd", normalize_relative(self.cwd, field="cwd"))
