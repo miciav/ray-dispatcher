@@ -481,9 +481,13 @@ For every host, in parallel but bounded by inventory size:
 8. Copy secrets with their declared modes and verify ownership without printing
    secret contents.
 
-`force=True` repeats validation and transfer but does not weaken atomicity.
-Stale source snapshots and environments remain available until
-`teardown(purge=True)`; normal setup never deletes an environment in use.
+`force=True` repeats validation and transfer but does not weaken atomicity. It
+applies only while the Ray runtime has not yet started — that is, to re-run a
+setup that aborted during provisioning (for example under
+`require_all_hosts=True`, before Ray was started). Once the runtime is running,
+`setup(force=True)` is rejected per §4.5, and re-provisioning requires teardown
+and a new Dispatcher. Stale source snapshots and environments remain available
+until `teardown(purge=True)`; normal setup never deletes an environment in use.
 
 `require_all_hosts=True` makes any provisioning failure abort setup after
 collecting a complete `ProvisioningReport`. When false, failed hosts are marked
@@ -604,6 +608,26 @@ reported through logging, not printed unconditionally.
   attempts.
 - Cleanup errors are aggregated and never replace an exception already escaping
   the context manager; they are attached as notes and logged.
+
+The public exception hierarchy (`errors.py`) is:
+
+```text
+DispatcherError                  # base for all library errors; also raised directly
+│                                #   for unclassified backend-wide failures
+├── ConfigurationError           # raised synchronously, before submission
+│   ├── ModelValidationError     # invalid RemoteHost/Inventory/Project/Job/SecretFile
+│   └── PathValidationError      # absolute path, "..", or symlink escape of the run root
+├── RayRuntimeConflictError      # ray.is_initialized() already true at setup (§3.2)
+├── ProvisioningError            # setup failed; carries the ProvisioningReport
+├── HostInUseError               # remote session lock held by another live session (§3.2)
+├── NoHealthyHostsError          # no healthy capacity remains for pending work (§8.2)
+├── BatchExistsError             # local batch directory already exists (§4.5)
+└── BatchFailedError             # raise_on_failure=True; carries the ordered results (§4.5)
+```
+
+`FailureKind` values (`COMMAND`, `SSH`, `TIMEOUT`, `OUTPUT_MISSING`, `COLLECTION`,
+`HOST_LOST`, `INTERNAL`) are recorded on `AttemptResult`/`JobResult`, not raised
+as exceptions; they drive retry classification (§8.3).
 
 ## 10. Teardown and persistence
 
