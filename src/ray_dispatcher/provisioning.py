@@ -268,3 +268,30 @@ class HostProvisioner:
         )
         self.t.push(self.runner_path, remote)
         return digest
+
+    def _copy_secrets(self) -> None:
+        if not self.project.secrets:
+            return
+        sdir = shlex.quote(self._lo.secrets)
+        self._checked(
+            ["sh", "-c", f"mkdir -p {sdir} && chmod 700 {sdir}"], "secrets dir"
+        )
+        for secret in self.project.secrets:
+            remote = f"{self._lo.secrets}/{secret.remote_name}"
+            self.t.push(secret.source, remote)
+            self._checked(
+                ["chmod", f"{secret.mode:o}", remote],
+                f"chmod secret {secret.remote_name}",
+            )
+            # Owner check only — never reads the secret's contents (§6.3.8).
+            # GNU stat first, BSD/macOS stat as a dev fallback.
+            qr = shlex.quote(remote)
+            owner = self._checked(
+                ["sh", "-c", f"stat -c '%U' {qr} 2>/dev/null || stat -f '%Su' {qr}"],
+                f"verify secret {secret.remote_name}",
+            ).stdout.strip()
+            if owner and owner != self.host.user:
+                raise _StepError(
+                    f"secret {secret.remote_name!r} on {self.host.host} owned by "
+                    f"{owner!r}, expected {self.host.user!r}"
+                )
