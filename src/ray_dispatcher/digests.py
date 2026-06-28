@@ -75,3 +75,7 @@ def environment_digest(
         h.update(field.encode())
         h.update(b"\0")
     return h.hexdigest()
+
+
+def runner_digest(runner_path: str) -> str:
+    return hashlib.sha256(Path(runner_path).read_bytes()).hexdigest()
