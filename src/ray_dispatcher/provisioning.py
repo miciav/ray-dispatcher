@@ -91,8 +91,9 @@ class HostProvisioner:
         tmp = path + ".tmp"
         qtmp, qpath = shlex.quote(tmp), shlex.quote(path)
         chmod = f" && chmod {mode:o} {qtmp}" if mode is not None else ""
+        cmd = f"printf %s {shlex.quote(content)} > {qtmp}{chmod} && mv -f {qtmp} {qpath}"
         self._checked(
-            ["sh", "-c", f"printf %s {shlex.quote(content)} > {qtmp}{chmod} && mv -f {qtmp} {qpath}"],
+            ["sh", "-c", cmd],
             f"write {path}",
         )
 
