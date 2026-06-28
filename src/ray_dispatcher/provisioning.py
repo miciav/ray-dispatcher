@@ -128,3 +128,24 @@ class HostProvisioner:
                 f"insufficient disk on {self.host.host}: "
                 f"{avail_kb // 1024} MB < {self.min_disk_mb} MB required"
             )
+
+    def _install_uv(self) -> str:
+        ver = self.project.uv_version
+        uv = self._lo.uv_bin(ver)
+        if not self.force and ver in self.t.run([uv, "--version"]).stdout:
+            return uv
+        install_dir = f"{self._lo.uv_root}/{ver}"
+        # ponytail: official version-pinned installer; exact on-disk layout
+        #           (UV_INSTALL_DIR -> <dir>/uv) is reconfirmed by the Phase 7 e2e.
+        script = (
+            f"set -e; mkdir -p {shlex.quote(install_dir)}; "
+            f"curl -LsSf https://astral.sh/uv/{ver}/install.sh "
+            f"| env UV_INSTALL_DIR={shlex.quote(install_dir)} INSTALLER_NO_MODIFY_PATH=1 sh"
+        )
+        self._checked(["sh", "-c", script], "uv install")
+        reported = self._checked([uv, "--version"], "uv version check").stdout
+        if ver not in reported:
+            raise _StepError(
+                f"installed uv on {self.host.host} reports {reported.strip()!r}, expected {ver}"
+            )
+        return uv
