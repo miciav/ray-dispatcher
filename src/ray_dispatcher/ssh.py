@@ -5,6 +5,10 @@ from __future__ import annotations
 import os
 import shlex
 import subprocess
+import time
+
+import fabric
+import paramiko
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -143,8 +147,40 @@ class SshTransport:
         src = f"{self.cfg.user}@{self.cfg.host}:{remote}"
         self._rsync(build_rsync_argv(self.cfg, src, local, delete=delete, excludes=excludes))
 
+    def run(self, argv: Sequence[str], *, timeout_s: float | None = None) -> CommandResult:
+        if self._conn is None:
+            self._conn = build_connection(self.cfg)
+        command = shlex.join(argv)  # argv is library-controlled; never a user job string
+        start = time.monotonic()
+        try:
+            result = self._conn.run(
+                command, hide=True, warn=True, timeout=timeout_s, in_stream=False
+            )
+        except Exception as exc:  # noqa: BLE001 — uniform seam failure
+            raise TransportError(f"ssh run failed: {exc}") from exc
+        return CommandResult(
+            returncode=result.exited,
+            stdout=result.stdout,
+            stderr=result.stderr,
+            duration_s=time.monotonic() - start,
+        )
+
     def _rsync(self, argv: list[str]) -> None:
         try:
             subprocess.run(argv, check=True, capture_output=True, text=True)
         except subprocess.CalledProcessError as exc:
             raise TransportError(f"rsync failed ({exc.returncode}): {exc.stderr}") from exc
+
+
+def build_connection(cfg: SshConfig) -> fabric.Connection:
+    """A Fabric connection that enforces host-key checking against cfg.known_hosts_file."""
+    connect_kwargs: dict[str, object] = {}
+    if cfg.identity_file:
+        connect_kwargs["key_filename"] = cfg.identity_file
+    conn = fabric.Connection(
+        host=cfg.host, user=cfg.user, port=cfg.port, connect_kwargs=connect_kwargs
+    )
+    client = conn.client  # lazily-created paramiko.SSHClient
+    client.load_host_keys(cfg.known_hosts_file)
+    client.set_missing_host_key_policy(paramiko.RejectPolicy())
+    return conn
