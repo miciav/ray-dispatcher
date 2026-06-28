@@ -108,3 +108,23 @@ class HostProvisioner:
         if self.layout is None:  # pragma: no cover - guarded by driver ordering
             raise _StepError("layout not resolved")
         return self.layout
+
+    def _preflight(self) -> None:
+        for tool in ("python3", "rsync"):
+            if self.t.run(["command", "-v", tool]).returncode != 0:
+                raise _StepError(f"required tool {tool!r} missing on {self.host.host}")
+        root = shlex.quote(self._lo.root)
+        # df -Pk gives POSIX one-line-per-fs output; available 1024-blocks is column 4.
+        r = self._checked(
+            ["sh", "-c", f"mkdir -p {root} && df -Pk {root} | tail -1"], "disk check"
+        )
+        try:
+            avail_kb = int(r.stdout.split()[3])
+        except (IndexError, ValueError) as exc:
+            msg = f"could not parse disk free on {self.host.host}: {r.stdout!r}"
+            raise _StepError(msg) from exc
+        if avail_kb < self.min_disk_mb * 1024:
+            raise _StepError(
+                f"insufficient disk on {self.host.host}: "
+                f"{avail_kb // 1024} MB < {self.min_disk_mb} MB required"
+            )
