@@ -57,7 +57,7 @@ class Inventory:
             seen.add(key)
 
     @classmethod
-    def from_yaml(cls, path: str) -> "Inventory":
+    def from_yaml(cls, path: str) -> Inventory:
         with open(path, encoding="utf-8") as fh:
             data = yaml.safe_load(fh)
         if not isinstance(data, dict) or "hosts" not in data:
