@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import os
 import shlex
+import subprocess
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
 from .errors import DispatcherError, ModelValidationError
 from .models import RemoteHost
@@ -120,3 +121,30 @@ def build_rsync_argv(
         argv += ["--exclude", ex]
     argv += [src, dst]
     return argv
+
+
+class SshTransport:
+    """Fabric for run (Task 5), OpenSSH rsync for push/pull. The Fabric
+    connection is created lazily so file transfer needs no live connection."""
+
+    def __init__(self, cfg: SshConfig) -> None:
+        self.cfg = cfg
+        self._conn: Any = None  # lazily-built fabric.Connection (Task 5)
+
+    def push(
+        self, local: str, remote: str, *, delete: bool = False, excludes: Sequence[str] = ()
+    ) -> None:
+        dst = f"{self.cfg.user}@{self.cfg.host}:{remote}"
+        self._rsync(build_rsync_argv(self.cfg, local, dst, delete=delete, excludes=excludes))
+
+    def pull(
+        self, remote: str, local: str, *, delete: bool = False, excludes: Sequence[str] = ()
+    ) -> None:
+        src = f"{self.cfg.user}@{self.cfg.host}:{remote}"
+        self._rsync(build_rsync_argv(self.cfg, src, local, delete=delete, excludes=excludes))
+
+    def _rsync(self, argv: list[str]) -> None:
+        try:
+            subprocess.run(argv, check=True, capture_output=True, text=True)
+        except subprocess.CalledProcessError as exc:
+            raise TransportError(f"rsync failed ({exc.returncode}): {exc.stderr}") from exc
