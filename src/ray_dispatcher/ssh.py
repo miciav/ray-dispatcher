@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from typing import Protocol
 
-from .errors import ModelValidationError
+from .errors import DispatcherError, ModelValidationError
 from .models import RemoteHost
 
 
@@ -39,3 +41,55 @@ class SshConfig:
             identity_file=identity,
             known_hosts_file=known_hosts,
         )
+
+
+class TransportError(DispatcherError):
+    """A transport (ssh/rsync) operation failed. Phase 5 maps this to FailureKind.SSH."""
+
+
+@dataclass(frozen=True)
+class CommandResult:
+    returncode: int
+    stdout: str
+    stderr: str
+    duration_s: float
+
+    @property
+    def ok(self) -> bool:
+        return self.returncode == 0
+
+
+class Transport(Protocol):
+    def run(self, argv: Sequence[str], *, timeout_s: float | None = None) -> CommandResult: ...
+
+    def push(
+        self, local: str, remote: str, *, delete: bool = False, excludes: Sequence[str] = ()
+    ) -> None: ...
+
+    def pull(
+        self, remote: str, local: str, *, delete: bool = False, excludes: Sequence[str] = ()
+    ) -> None: ...
+
+
+class FakeTransport:
+    """In-memory Transport for unit tests. Records calls; programmable run results."""
+
+    def __init__(self, run_results: Callable[[list[str]], CommandResult] | None = None) -> None:
+        self.calls: list[tuple[object, ...]] = []
+        self._run_results = run_results
+
+    def run(self, argv: Sequence[str], *, timeout_s: float | None = None) -> CommandResult:
+        self.calls.append(("run", tuple(argv)))
+        if self._run_results is not None:
+            return self._run_results(list(argv))
+        return CommandResult(0, "", "", 0.0)
+
+    def push(
+        self, local: str, remote: str, *, delete: bool = False, excludes: Sequence[str] = ()
+    ) -> None:
+        self.calls.append(("push", (local, remote, delete, tuple(excludes))))
+
+    def pull(
+        self, remote: str, local: str, *, delete: bool = False, excludes: Sequence[str] = ()
+    ) -> None:
+        self.calls.append(("pull", (remote, local, delete, tuple(excludes))))
