@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import shlex
+import threading
 import time
 from collections.abc import Callable
 from typing import Any
@@ -88,3 +89,24 @@ class SessionLock:
         existing = self._read_owner()
         if existing is not None and existing.get("session_id") == self.session_id:
             self.transport.run(_sh(f"rm -f {_LOCK_FILE}"))
+
+
+class HeartbeatThread(threading.Thread):
+    """Background daemon that refreshes a SessionLock until stopped."""
+
+    def __init__(self, lock: SessionLock, interval_s: float) -> None:
+        super().__init__(daemon=True)
+        self._lock = lock
+        self._interval = interval_s
+        self._stopped = threading.Event()
+
+    def run(self) -> None:
+        while not self._stopped.wait(self._interval):
+            try:
+                self._lock.heartbeat()
+            except Exception:  # noqa: BLE001 — heartbeat is best-effort; TTL is the net
+                pass
+
+    def stop(self) -> None:
+        self._stopped.set()
+        self.join(timeout=5)
