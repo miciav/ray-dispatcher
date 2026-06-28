@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Protocol
@@ -93,3 +94,29 @@ class FakeTransport:
         self, remote: str, local: str, *, delete: bool = False, excludes: Sequence[str] = ()
     ) -> None:
         self.calls.append(("pull", (remote, local, delete, tuple(excludes))))
+
+
+def _ssh_e_option(cfg: SshConfig) -> str:
+    """The rsync ``-e`` value: an ssh invocation carrying the same SSH settings
+    as Fabric. shlex.join keeps paths with spaces safe."""
+    parts = [
+        "ssh",
+        "-p", str(cfg.port),
+        "-o", f"UserKnownHostsFile={cfg.known_hosts_file}",
+        "-o", "StrictHostKeyChecking=yes",
+    ]
+    if cfg.identity_file:
+        parts += ["-i", cfg.identity_file]
+    return shlex.join(parts)
+
+
+def build_rsync_argv(
+    cfg: SshConfig, src: str, dst: str, *, delete: bool, excludes: Sequence[str]
+) -> list[str]:
+    argv = ["rsync", "-a", "--protect-args", "-e", _ssh_e_option(cfg)]
+    if delete:
+        argv.append("--delete")
+    for ex in excludes:
+        argv += ["--exclude", ex]
+    argv += [src, dst]
+    return argv
