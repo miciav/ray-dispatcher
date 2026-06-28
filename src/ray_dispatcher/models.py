@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from enum import Enum
 
 import yaml
 
@@ -167,3 +168,81 @@ class Job:
         if self.timeout_s is not None and self.timeout_s <= 0:
             raise ModelValidationError("timeout_s must be > 0 when set")
         object.__setattr__(self, "cwd", normalize_relative(self.cwd, field="cwd"))
+
+
+class JobStatus(Enum):
+    PENDING = "pending"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    TIMED_OUT = "timed_out"
+    CANCELLED = "cancelled"
+
+
+class FailureKind(Enum):
+    COMMAND = "command"
+    SSH = "ssh"
+    TIMEOUT = "timeout"
+    OUTPUT_MISSING = "output_missing"
+    COLLECTION = "collection"
+    HOST_LOST = "host_lost"
+    INTERNAL = "internal"
+
+
+@dataclass(frozen=True)
+class RetryPolicy:
+    max_attempts: int = 2
+    retry_on: frozenset[FailureKind] = frozenset(
+        {FailureKind.SSH, FailureKind.HOST_LOST, FailureKind.COLLECTION}
+    )
+
+    def __post_init__(self) -> None:
+        if self.max_attempts < 1:
+            raise ModelValidationError("max_attempts must be >= 1")
+
+
+@dataclass(frozen=True)
+class JobHandle:
+    batch_id: str
+    job_id: str
+    token: str  # opaque; consumers must not interpret it
+
+
+@dataclass(frozen=True)
+class AttemptResult:
+    number: int
+    host: str
+    status: JobStatus
+    returncode: int | None
+    duration_s: float
+    stdout_log: str
+    stderr_log: str
+    failure_kind: FailureKind | None = None
+    error: str | None = None
+
+
+@dataclass(frozen=True)
+class JobResult:
+    id: str
+    batch_id: str
+    status: JobStatus
+    returncode: int | None
+    duration_s: float
+    host: str | None
+    output_dir: str | None
+    attempts: tuple[AttemptResult, ...]
+    error: str | None = None
+
+
+@dataclass(frozen=True)
+class HostProvisioningResult:
+    host: str
+    succeeded: bool
+    source_digest: str | None
+    environment_digest: str | None
+    error: str | None = None
+
+
+@dataclass(frozen=True)
+class ProvisioningReport:
+    hosts: tuple[HostProvisioningResult, ...]
