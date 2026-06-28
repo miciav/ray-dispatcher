@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import shlex
 
-from .digests import environment_digest, source_digest
+from .digests import environment_digest, runner_digest, source_digest
 from .models import Project, RemoteHost
 from .ssh import CommandResult, Transport
 
@@ -254,4 +254,17 @@ class HostProvisioner:
                          f"mv {qstg} {qenv}; rm -rf {qold}"],
             "env atomic publish",
         )
+        return digest
+
+    def _install_runner(self) -> str:
+        digest = runner_digest(self.runner_path)
+        remote = self._lo.runner(digest)
+        present = self.t.run(["test", "-f", remote]).returncode == 0
+        if present and not self.force:
+            return digest
+        self._checked(
+            ["sh", "-c", f"mkdir -p {shlex.quote(self._lo.runner_dir(digest))}"],
+            "runner dir mkdir",
+        )
+        self.t.push(self.runner_path, remote)
         return digest
