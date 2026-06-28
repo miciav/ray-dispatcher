@@ -26,11 +26,17 @@ def build_env(manifest: dict[str, Any]) -> dict[str, str]:
     return env
 
 
-def _drain(stream: IO[bytes], raw_path: str) -> None:
+def _tee(stream: IO[bytes], raw_path: str, forward: IO[bytes]) -> None:
+    """Write child output raw to ``raw_path`` and forward the same bytes to
+    ``forward`` (a binary stream) so the host SSH channel carries it live. The
+    VM-side file keeps the exact bytes; the host adds replacement markers when
+    it writes its streamed copy (Phase 5)."""
     with open(raw_path, "wb") as raw:
         for chunk in iter(lambda: stream.read(4096), b""):
             raw.write(chunk)
             raw.flush()
+            forward.write(chunk)
+            forward.flush()
 
 
 def run(manifest: dict[str, Any]) -> int:
@@ -48,8 +54,12 @@ def run(manifest: dict[str, Any]) -> int:
     with open(manifest["pid_path"], "w") as fh:
         json.dump({"pid": proc.pid, "pgid": os.getpgid(proc.pid)}, fh)
     threads = [
-        threading.Thread(target=_drain, args=(proc.stdout, manifest["stdout_path"])),
-        threading.Thread(target=_drain, args=(proc.stderr, manifest["stderr_path"])),
+        threading.Thread(
+            target=_tee, args=(proc.stdout, manifest["stdout_path"], sys.stdout.buffer)
+        ),
+        threading.Thread(
+            target=_tee, args=(proc.stderr, manifest["stderr_path"], sys.stderr.buffer)
+        ),
     ]
     for t in threads:
         t.start()
