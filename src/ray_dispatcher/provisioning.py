@@ -9,8 +9,10 @@ All interpolated data is shlex-quoted; no user string is ever shelled (§7).
 
 from __future__ import annotations
 
+import json
 import shlex
 
+from .digests import source_digest
 from .models import Project, RemoteHost
 from .ssh import CommandResult, Transport
 
@@ -166,3 +168,28 @@ class HostProvisioner:
             raise _StepError(
                 f"interpreter on {self.host.host} is {got!r}, expected {want!r}"
             )
+
+    def _sync_source(self) -> str:
+        staging = f"{self._lo.source}.staging"
+        self._checked(["sh", "-c", f"mkdir -p {shlex.quote(staging)}"], "source staging mkdir")
+        # trailing slashes: copy the *contents* of the local tree into staging.
+        self.t.push(
+            self.project.path.rstrip("/") + "/",
+            staging + "/",
+            delete=True,
+            excludes=self.project.exclude,
+        )
+        src = shlex.quote(self._lo.source)
+        stg = shlex.quote(staging)
+        old = shlex.quote(self._lo.source + ".old")
+        # The `mv staging source` rename is atomic within one parent dir; the brief
+        # window where source is absent is acceptable pre-runtime (no readers yet).
+        self._checked(
+            ["sh", "-c", f"rm -rf {old}; if [ -e {src} ]; then mv {src} {old}; fi; "
+                         f"mv {stg} {src}; rm -rf {old}"],
+            "source atomic replace",
+        )
+        digest = source_digest(self.project.path, self.project.exclude)
+        manifest = json.dumps({"source_digest": digest, "project_id": self.project.project_id})
+        self._write_remote_file(self._lo.source_manifest, manifest)
+        return digest
