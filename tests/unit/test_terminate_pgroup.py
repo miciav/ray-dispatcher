@@ -24,7 +24,6 @@ def test_term_is_enough_when_process_exits():
 
 def test_escalates_to_kill_after_grace():
     # stays alive through the grace window, then dies after KILL
-    t = FakeTransport(run_results=_alive_for(100))
     fake_clock = {"t": 0.0}
 
     def now():

@@ -61,3 +61,19 @@ def test_runner_applies_venv_and_secret_env(tmp_path):
     assert first_path == m["venv_bin"]
     assert venv == m["virtual_env"]
     assert lic == "/remote/gurobi.lic"
+
+
+def test_venv_path_wins_over_job_provided_path(tmp_path):
+    """Job-set PATH must not displace the venv prepend (spec §7, FIX 3)."""
+    probe = tmp_path / "probe.txt"
+    m, path = _manifest(
+        tmp_path,
+        [sys.executable, "-c",
+         f"import os; open({str(probe)!r},'w').write(os.environ['PATH'])"],
+        env={"OUT": str(probe), "PATH": "/custom/bin"},
+    )
+    _invoke(path)
+    full_path = probe.read_text()
+    segments = full_path.split(":")
+    assert segments[0] == m["venv_bin"], "venv_bin must be the first PATH segment"
+    assert "/custom/bin" in full_path, "/custom/bin must still appear in PATH"

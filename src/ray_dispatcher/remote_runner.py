@@ -19,29 +19,36 @@ from typing import IO, Any
 
 def build_env(manifest: dict[str, Any]) -> dict[str, str]:
     env = os.environ.copy()
-    env["PATH"] = manifest["venv_bin"] + os.pathsep + env.get("PATH", "")
-    env["VIRTUAL_ENV"] = manifest["virtual_env"]
     env.update(manifest.get("env", {}))
     env.update(manifest.get("secret_env", {}))
+    # venv guarantees win over any job-provided env (spec §7)
+    env["PATH"] = manifest["venv_bin"] + os.pathsep + env.get("PATH", "")
+    env["VIRTUAL_ENV"] = manifest["virtual_env"]
     return env
 
 
 def _tee(stream: IO[bytes], raw_path: str, forward: IO[bytes]) -> None:
-    """Write child output raw to ``raw_path`` and forward the same bytes to
-    ``forward`` (a binary stream) so the host SSH channel carries it live. The
-    VM-side file keeps the exact bytes; the host adds replacement markers when
-    it writes its streamed copy (Phase 5)."""
+    """Write child output raw to ``raw_path`` and forward the same bytes live.
+    Forwarding is best-effort: if the forward stream breaks (e.g. the host SSH
+    channel drops), keep draining the pipe to the file so the child never blocks
+    and the exit status is still recorded (spec §7)."""
+    forwarding = True
     with open(raw_path, "wb") as raw:
         for chunk in iter(lambda: stream.read(4096), b""):
             raw.write(chunk)
             raw.flush()
-            forward.write(chunk)
-            forward.flush()
+            if forwarding:
+                try:
+                    forward.write(chunk)
+                    forward.flush()
+                except OSError:
+                    forwarding = False
 
 
 def run(manifest: dict[str, Any]) -> int:
     env = build_env(manifest)
     started = time.time()
+    started_mono = time.monotonic()
     proc = subprocess.Popen(
         manifest["argv"],
         cwd=manifest["cwd"],
@@ -73,7 +80,7 @@ def run(manifest: dict[str, Any]) -> int:
                 "returncode": proc.returncode,
                 "started_at": started,
                 "ended_at": ended,
-                "duration_s": ended - started,
+                "duration_s": time.monotonic() - started_mono,
             },
             fh,
         )

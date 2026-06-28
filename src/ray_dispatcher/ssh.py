@@ -109,6 +109,8 @@ def _ssh_e_option(cfg: SshConfig) -> str:
         "-p", str(cfg.port),
         "-o", f"UserKnownHostsFile={cfg.known_hosts_file}",
         "-o", "StrictHostKeyChecking=yes",
+        "-o", "GlobalKnownHostsFile=/dev/null",
+        "-o", "BatchMode=yes",
     ]
     if cfg.identity_file:
         parts += ["-i", cfg.identity_file]
@@ -118,6 +120,7 @@ def _ssh_e_option(cfg: SshConfig) -> str:
 def build_rsync_argv(
     cfg: SshConfig, src: str, dst: str, *, delete: bool, excludes: Sequence[str]
 ) -> list[str]:
+    # --protect-args: stops the remote shell from mangling paths with spaces or special chars
     argv = ["rsync", "-a", "--protect-args", "-e", _ssh_e_option(cfg)]
     if delete:
         argv.append("--delete")

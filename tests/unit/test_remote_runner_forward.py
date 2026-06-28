@@ -1,7 +1,25 @@
+import io
 import json
 import subprocess
 import sys
 from pathlib import Path
+
+from ray_dispatcher.remote_runner import _tee
+
+
+class _BrokenForward:
+    def write(self, b):
+        raise OSError("broken pipe")
+
+    def flush(self):
+        pass
+
+
+def test_tee_keeps_draining_to_file_when_forward_breaks(tmp_path):
+    src = io.BytesIO(b"abc" * 10000)  # larger than one 4096 chunk
+    out = tmp_path / "raw.log"
+    _tee(src, str(out), _BrokenForward())  # must NOT raise
+    assert out.read_bytes() == b"abc" * 10000
 
 RUNNER = str(Path("src/ray_dispatcher/remote_runner.py").resolve())
 

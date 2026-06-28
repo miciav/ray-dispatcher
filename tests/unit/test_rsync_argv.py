@@ -18,6 +18,8 @@ def test_argv_has_archive_and_ssh_options():
     assert "-i /keys/id" in ssh_opt
     assert "UserKnownHostsFile=/keys/kh" in ssh_opt
     assert "StrictHostKeyChecking=yes" in ssh_opt
+    assert "GlobalKnownHostsFile=/dev/null" in ssh_opt
+    assert "BatchMode=yes" in ssh_opt
     assert argv[-2:] == ["/local/", "u@h:/remote/"]
 
 
