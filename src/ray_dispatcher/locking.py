@@ -78,3 +78,13 @@ class SessionLock:
         raise HostInUseError(
             f"session lock held by {existing.get('session_id')!r}"
         )
+
+    def heartbeat(self) -> None:
+        existing = self._read_owner()
+        if existing is not None and existing.get("session_id") == self.session_id:
+            self._write_owner()
+
+    def release(self) -> None:
+        existing = self._read_owner()
+        if existing is not None and existing.get("session_id") == self.session_id:
+            self.transport.run(_sh(f"rm -f {_LOCK_FILE}"))
