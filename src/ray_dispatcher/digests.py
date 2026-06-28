@@ -7,6 +7,8 @@ import os
 from collections.abc import Sequence
 from pathlib import Path
 
+from .models import Project
+
 
 def _excluded(rel: str, excludes: Sequence[str]) -> bool:
     # ponytail: path-prefix excludes (e.g. ".venv/"), not full rsync globs —
@@ -51,5 +53,25 @@ def source_digest(root: str, excludes: Sequence[str]) -> str:
             mode = p.stat().st_mode & 0o777
             h.update(f"M{mode:o}".encode())
             h.update(p.read_bytes())
+        h.update(b"\0")
+    return h.hexdigest()
+
+
+def environment_digest(
+    project: Project, *, platform: str, sync_flags: Sequence[str]
+) -> str:
+    base = Path(project.path)
+    h = hashlib.sha256()
+    for fname in ("pyproject.toml", "uv.lock"):
+        h.update((base / fname).read_bytes())
+        h.update(b"\0")
+    for field in (
+        project.python,
+        project.uv_version,
+        "\0".join(project.dependency_groups),
+        "\0".join(sync_flags),
+        platform,
+    ):
+        h.update(field.encode())
         h.update(b"\0")
     return h.hexdigest()
