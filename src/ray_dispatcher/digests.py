@@ -44,11 +44,11 @@ def source_digest(root: str, excludes: Sequence[str]) -> str:
     h = hashlib.sha256()
     for rel in _iter_source_files(root_path, excludes):
         p = root_path / rel
-        h.update(rel.encode())
+        h.update(os.fsencode(rel))
         h.update(b"\0")
         if p.is_symlink():
             h.update(b"L")
-            h.update(os.readlink(p).encode())
+            h.update(os.fsencode(os.readlink(p)))
         else:
             mode = p.stat().st_mode & 0o777
             h.update(f"M{mode:o}".encode())

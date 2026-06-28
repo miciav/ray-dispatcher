@@ -42,3 +42,5 @@ def test_env_digest_changes_on_metadata(tmp_path):
     assert environment_digest(p, platform="linux-x86_64", sync_flags=("--frozen",)) != base
     p3 = _project(tmp_path, dependency_groups=("dev",))
     assert environment_digest(p3, platform="linux-x86_64", sync_flags=("--locked",)) != base
+    p4 = _project(tmp_path, uv_version="0.12.0")
+    assert environment_digest(p4, platform="linux-x86_64", sync_flags=("--locked",)) != base

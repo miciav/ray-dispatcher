@@ -109,4 +109,5 @@ class HeartbeatThread(threading.Thread):
 
     def stop(self) -> None:
         self._stopped.set()
-        self.join(timeout=5)
+        if self.is_alive():  # safe in a finally-block even if start() never ran
+            self.join(timeout=5)
