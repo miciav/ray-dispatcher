@@ -1,7 +1,7 @@
 import json
 
-from ray_dispatcher.ssh import CommandResult, FakeTransport
 from ray_dispatcher.locking import SessionLock
+from ray_dispatcher.ssh import CommandResult, FakeTransport
 
 
 def _owner_responder(owner):
