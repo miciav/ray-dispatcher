@@ -151,3 +151,18 @@ class HostProvisioner:
                 f"installed uv on {self.host.host} reports {reported.strip()!r}, expected {ver}"
             )
         return uv
+
+    def _install_python(self, uv: str) -> None:
+        want = self.project.python
+        self._checked([uv, "python", "install", want], "uv python install")
+        interp = self._checked([uv, "python", "find", want], "uv python find").stdout.strip()
+        if not interp:
+            raise _StepError(f"uv could not locate Python {want} on {self.host.host}")
+        got = self._checked(
+            [interp, "-c", "import sys;print('.'.join(map(str,sys.version_info[:3])))"],
+            "python version check",
+        ).stdout.strip()
+        if got != want:
+            raise _StepError(
+                f"interpreter on {self.host.host} is {got!r}, expected {want!r}"
+            )
