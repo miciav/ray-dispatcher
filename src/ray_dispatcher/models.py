@@ -19,7 +19,7 @@ _JOB_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 
 def _is_posix_env_name(name: str) -> bool:
-    return bool(_POSIX_ENV_NAME_RE.match(name))
+    return bool(_POSIX_ENV_NAME_RE.fullmatch(name))
 
 
 @dataclass(frozen=True)
@@ -65,7 +65,19 @@ class Inventory:
         raw_hosts = data["hosts"]
         if not isinstance(raw_hosts, list):
             raise ModelValidationError("'hosts' must be a list")
-        hosts = tuple(RemoteHost(**entry) for entry in raw_hosts)
+        built: list[RemoteHost] = []
+        for i, entry in enumerate(raw_hosts):
+            if not isinstance(entry, dict):
+                raise ModelValidationError(
+                    f"hosts[{i}] must be a mapping, got {type(entry).__name__!r}"
+                )
+            try:
+                built.append(RemoteHost(**entry))
+            except TypeError as exc:
+                raise ModelValidationError(
+                    f"hosts[{i}] has unexpected or missing keys: {exc}"
+                ) from exc
+        hosts = tuple(built)
         return cls(hosts)
 
 
@@ -100,11 +112,11 @@ class Project:
     def __post_init__(self) -> None:
         if not self.path:
             raise ModelValidationError("project path must be non-empty")
-        if not _PROJECT_ID_RE.match(self.project_id):
+        if not _PROJECT_ID_RE.fullmatch(self.project_id):
             raise ModelValidationError(f"invalid project_id: {self.project_id!r}")
-        if not _EXACT_VERSION_RE.match(self.python):
+        if not _EXACT_VERSION_RE.fullmatch(self.python):
             raise ModelValidationError(f"python must be exact X.Y.Z, got {self.python!r}")
-        if not _EXACT_VERSION_RE.match(self.uv_version):
+        if not _EXACT_VERSION_RE.fullmatch(self.uv_version):
             raise ModelValidationError(
                 f"uv_version must be exact X.Y.Z, got {self.uv_version!r}"
             )
@@ -155,11 +167,15 @@ class Job:
     cwd: str = "."
 
     def __post_init__(self) -> None:
-        if not _JOB_ID_RE.match(self.id):
+        if not _JOB_ID_RE.fullmatch(self.id):
             raise ModelValidationError(f"invalid job id: {self.id!r}")
         if not self.command:
             raise ModelValidationError("command must be non-empty")
         for part in self.command:
+            if not isinstance(part, str):
+                raise ModelValidationError(
+                    f"command parts must be strings, got {type(part).__name__!r}"
+                )
             if "\x00" in part:
                 raise ModelValidationError("command parts must not contain NUL bytes")
         for key in self.env:

@@ -49,3 +49,9 @@ def test_project_rejects_duplicate_secret_names():
     with pytest.raises(ModelValidationError):
         Project(path="p", project_id="pid", python="3.10.18", uv_version="0.11.25",
                 secrets=(s1, s2))
+
+
+# FIX 1: trailing-newline bypass regression
+def test_project_rejects_trailing_newline_in_python():
+    with pytest.raises(ModelValidationError):
+        Project(path="p", project_id="pid", python="3.10.18\n", uv_version="0.11.25")

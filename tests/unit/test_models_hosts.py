@@ -62,3 +62,14 @@ def test_inventory_from_yaml(tmp_path):
     assert [h.host for h in inv.hosts] == ["10.0.0.11", "10.0.0.12"]
     assert inv.hosts[1].slots == 4
     assert inv.hosts[1].port == 2222
+
+
+# FIX 2: non-dict hosts entry raises ModelValidationError
+def test_inventory_from_yaml_rejects_nondict_entry(tmp_path):
+    p = tmp_path / "hosts.yaml"
+    p.write_text(textwrap.dedent("""
+        hosts:
+          - just-a-string
+    """))
+    with pytest.raises(ModelValidationError):
+        Inventory.from_yaml(str(p))

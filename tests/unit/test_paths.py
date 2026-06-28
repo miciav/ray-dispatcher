@@ -31,7 +31,7 @@ def test_normalize_relative_rejects(bad):
 
 def test_ensure_within_accepts_nested(tmp_path):
     target = ensure_within(tmp_path, "sub/dir/file.txt")
-    assert str(target).startswith(str(tmp_path.resolve()))
+    assert target == (tmp_path.resolve() / "sub/dir/file.txt")
 
 
 def test_ensure_within_rejects_symlink_escape(tmp_path):
