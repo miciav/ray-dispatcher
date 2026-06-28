@@ -68,7 +68,11 @@ class SessionLock:
         if existing is None or existing.get("session_id") == self.session_id:
             self._write_owner()  # ours, or unreadable/corrupt -> take it
             return
-        if self.now() - float(existing.get("heartbeat", 0)) > self.ttl_s:
+        try:
+            heartbeat = float(existing.get("heartbeat", 0))
+        except (TypeError, ValueError):
+            heartbeat = 0.0  # corrupt heartbeat -> treat as expired (takeable), never crash
+        if self.now() - heartbeat > self.ttl_s:
             self._write_owner()  # stale: heartbeat expired -> take over
             return
         raise HostInUseError(
