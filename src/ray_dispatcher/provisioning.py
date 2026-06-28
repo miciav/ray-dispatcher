@@ -12,9 +12,17 @@ from __future__ import annotations
 import json
 import shlex
 
-from .digests import source_digest
+from .digests import environment_digest, source_digest
 from .models import Project, RemoteHost
 from .ssh import CommandResult, Transport
+
+# Base sync flags shared by environment_digest and the uv sync invocation (§6.3.6).
+SYNC_FLAGS = (
+    "--locked",
+    "--no-install-project",
+    "--no-install-workspace",
+    "--no-default-groups",
+)
 
 
 class _StepError(Exception):
@@ -192,4 +200,58 @@ class HostProvisioner:
         digest = source_digest(self.project.path, self.project.exclude)
         manifest = json.dumps({"source_digest": digest, "project_id": self.project.project_id})
         self._write_remote_file(self._lo.source_manifest, manifest)
+        return digest
+
+    def _publish_env(self, uv: str) -> str:
+        platform = self._checked(["uname", "-sm"], "platform probe").stdout.strip()
+        digest = environment_digest(self.project, platform=platform, sync_flags=SYNC_FLAGS)
+        env_dir = self._lo.env_dir(digest)
+        venv = self._lo.env_venv(digest)
+        manifest_path = self._lo.env_manifest(digest)
+        valid = self.t.run(
+            ["sh", "-c", f"test -f {shlex.quote(manifest_path)} && "
+                         f"test -x {shlex.quote(venv)}/bin/python"]
+        ).returncode == 0
+        if valid and not self.force:
+            return digest
+
+        staging = f"{env_dir}.staging"
+        staging_venv = f"{staging}/.venv"
+        self._checked(
+            ["sh", "-c", f"rm -rf {shlex.quote(staging)}; mkdir -p {shlex.quote(staging)}"],
+            "env staging mkdir",
+        )
+        sync = [uv, "sync", "--project", self._lo.source, *SYNC_FLAGS,
+                "--python", self.project.python]
+        for group in self.project.dependency_groups:
+            sync += ["--group", group]
+        self._checked(
+            ["sh", "-c",
+             f"UV_PROJECT_ENVIRONMENT={shlex.quote(staging_venv)} {shlex.join(sync)}"],
+            "uv sync",
+        )
+        # ponytail: venv relocatability after the atomic move is reconfirmed by the
+        #           Phase 7 e2e; bin/python is a symlink to the uv interpreter and
+        #           survives a move, console-script shebangs would not (jobs use python).
+        self._checked(
+            ["sh", "-c", f"{shlex.quote(staging_venv)}/bin/python -c 'import sys'"],
+            "venv smoke check",
+        )
+        manifest = json.dumps({
+            "environment_digest": digest,
+            "python": self.project.python,
+            "uv_version": self.project.uv_version,
+            "platform": platform,
+            "dependency_groups": list(self.project.dependency_groups),
+            "sync_flags": list(SYNC_FLAGS),
+        })
+        self._write_remote_file(f"{staging}/environment-manifest.json", manifest)
+        qenv, qstg = shlex.quote(env_dir), shlex.quote(staging)
+        qold = shlex.quote(env_dir + ".old")
+        self._checked(
+            ["sh", "-c", f"mkdir -p {shlex.quote(self._lo.project)}/envs; rm -rf {qold}; "
+                         f"if [ -e {qenv} ]; then mv {qenv} {qold}; fi; "
+                         f"mv {qstg} {qenv}; rm -rf {qold}"],
+            "env atomic publish",
+        )
         return digest
