@@ -1,6 +1,6 @@
-"""Scheduling and attempt execution (spec §7, §8.2).
+"""Scheduling and attempt execution (spec §7, §8).
 
-Two concerns live here, both Ray-free so Phase 6 can wrap them:
+Three concerns live here, all Ray-free so Phase 6b can wrap them:
 
 - The lease state machine: `LeasePool` (pure, single-threaded, clock-injected —
   no Ray, no SSH), the async `LeaseService` wrapper, and the `reconcile_host`
@@ -8,12 +8,21 @@ Two concerns live here, both Ray-free so Phase 6 can wrap them:
 - The host-side attempt driver: `execute_attempt` and its helpers
   (`secret_env_map`, `HostRuntime`, `build_runner_manifest`), which run one job
   attempt on one provisioned host over SSH (§7.2–7.9).
+- The job orchestration: `should_retry`, `assemble_job_result`, and `run_job` —
+  the per-job retry loop that drives `execute_attempt` over a `LeaseHandle`,
+  classifies failures, prefers a fresh host on retry, and folds the attempts
+  into a `JobResult` (§8.3, §4.4).
 
-Deferred to Phase 6: the Ray task / actor decoration, the retry loop, timeout +
-process termination (§8.1), and `JobResult` assembly. In particular
-`execute_attempt` blocks for the whole job on one SSH call, so the Phase 6
-wrapper must heartbeat the lease concurrently (§7.1/§8.2) — this driver cannot
-beat while blocked.
+Deferred to Phase 6b: the Ray task / actor decoration; the concurrent lease
+heartbeat (`execute_attempt` blocks for the whole job on one SSH call, so the
+6b wrapper must beat the lease while this driver is blocked, §7.1/§8.2); timeout
++ process termination (§8.1, producing `TIMEOUT`); and the `HOST_LOST` /
+`COLLECTION` failure kinds (`retry_on` lists them, but they originate in the 6b
+heartbeat/collection machinery — `run_job` produces only `SSH`/`INTERNAL` from
+raised failures plus `COMMAND`/`OUTPUT_MISSING` from `execute_attempt`). The 6b
+Ray-task wrapper must also guarantee every job terminates as a `JobResult`,
+catching any stray exception `run_job` does not classify (e.g. a malformed
+remote `result.json`) as a final `INTERNAL` result.
 """
 
 from __future__ import annotations
@@ -344,6 +353,9 @@ def execute_attempt(
         local.attempt_json(attempt), result, missing_optional=collected.missing_optional
     )
     return result
+
+
+# --- job orchestration (§8.3, §4.4) --------------------------------------------
 
 
 def should_retry(policy: RetryPolicy, kind: FailureKind | None, completed_attempts: int) -> bool:
