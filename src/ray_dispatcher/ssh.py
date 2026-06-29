@@ -201,6 +201,22 @@ def terminate_process_group(
     return gone()
 
 
+def write_remote_file(
+    transport: Transport, path: str, content: str, *, mode: int | None = None
+) -> None:
+    """Atomically write ``content`` to absolute remote ``path`` (spec §7 no-shell).
+
+    Data reaches the shell only as a single shlex-quoted ``printf %s`` argument;
+    the temp file is renamed into place so a partial write is never observed.
+    """
+    qtmp = shlex.quote(f"{path}.tmp")
+    chmod = f" && chmod {mode:o} {qtmp}" if mode is not None else ""
+    cmd = f"printf %s {shlex.quote(content)} > {qtmp}{chmod} && mv -f {qtmp} {shlex.quote(path)}"
+    result = transport.run(["sh", "-c", cmd])
+    if result.returncode != 0:
+        raise TransportError(f"failed to write {path}: {result.stderr}")
+
+
 def build_connection(cfg: SshConfig) -> fabric.Connection:
     """A Fabric connection that enforces host-key checking against cfg.known_hosts_file."""
     connect_kwargs: dict[str, object] = {}
