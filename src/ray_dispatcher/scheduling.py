@@ -189,3 +189,28 @@ class LeaseService:
         async with self._cond:
             self._pool.release(token)
             self._cond.notify_all()
+
+    async def heartbeat(self, token: str) -> bool:
+        async with self._cond:
+            return self._pool.heartbeat(token)
+
+    async def sweep(self) -> list[str]:
+        async with self._cond:
+            hosts = self._pool.sweep_expired()
+            if hosts:
+                self._cond.notify_all()  # capacity may have dropped -> re-check waiters
+            return hosts
+
+    async def quarantine(self, host: str) -> None:
+        async with self._cond:
+            self._pool.quarantine(host)
+            self._cond.notify_all()
+
+    async def mark_reconciled(self, host: str) -> None:
+        async with self._cond:
+            self._pool.mark_reconciled(host)
+            self._cond.notify_all()
+
+    async def quarantined_hosts(self) -> list[str]:
+        async with self._cond:
+            return self._pool.quarantined_hosts()
