@@ -8,6 +8,7 @@ and shut down at teardown.
 from __future__ import annotations
 
 import secrets
+import threading
 from collections.abc import Callable, Iterable
 
 import ray
@@ -36,16 +37,43 @@ HostLease = ray.remote(num_cpus=0)(LeaseService)
 
 
 class _ActorLeaseHandle:
-    """Synchronous LeaseHandle over the async HostLease actor (used by the 6c task)."""
+    """Synchronous LeaseHandle with heartbeat daemon (§8.2)."""
 
-    def __init__(self, actor: ray.actor.ActorHandle[LeaseService]) -> None:
+    def __init__(
+        self,
+        actor: ray.actor.ActorHandle[LeaseService],
+        *,
+        heartbeat_interval_s: float = 5.0,
+    ) -> None:
         self._actor = actor
+        self._heartbeat_interval_s = heartbeat_interval_s
+        self._stop = threading.Event()
+        self._hb_thread: threading.Thread | None = None
 
     def acquire(self, attempt_id: str, *, exclude: Iterable[str] = ()) -> Lease:
-        return ray.get(self._actor.acquire.remote(attempt_id, exclude=tuple(exclude)))  # type: ignore[no-any-return]
+        lease = ray.get(self._actor.acquire.remote(attempt_id, exclude=tuple(exclude)))
+        self._stop.clear()
+        self._hb_thread = threading.Thread(
+            target=self._heartbeat, args=(lease.token,), daemon=True, name="lease-heartbeat"
+        )
+        self._hb_thread.start()
+        return lease  # type: ignore[no-any-return]
 
     def release(self, token: str) -> None:
+        self._stop.set()
+        if self._hb_thread is not None:
+            self._hb_thread.join(timeout=self._heartbeat_interval_s + 1.0)
+            self._hb_thread = None
         ray.get(self._actor.release.remote(token))
+
+    def _heartbeat(self, token: str) -> None:
+        while not self._stop.wait(self._heartbeat_interval_s):
+            try:
+                alive = ray.get(self._actor.heartbeat.remote(token))
+            except Exception:
+                break
+            if not alive:
+                break
 
 
 class SshRayBackend(ExecutionBackend):
