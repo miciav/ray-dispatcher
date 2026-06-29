@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import secrets
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 
 from .errors import ModelValidationError
@@ -73,3 +73,27 @@ class LeasePool:
 
     def free_slots(self) -> int:
         return sum(self._free_slot_count(h) for h in self._live_hosts())
+
+    def acquire(self, attempt_id: str, *, exclude: Iterable[str] = ()) -> Lease | None:
+        live = self._live_hosts()
+        untried = live - set(exclude)
+        # Reuse an excluded host only once every healthy host has been tried (§7.1):
+        # while any non-excluded host exists, draw only from those (else wait).
+        pool = untried if untried else live
+        candidates = [h for h in pool if self._free_slot_count(h) > 0]
+        if not candidates:
+            return None
+        # most-free first; sort the labels so ties resolve deterministically.
+        host = max(sorted(candidates), key=self._free_slot_count)
+        slot = self._take_slot(host)
+        heartbeat = self._now()
+        lease = Lease(
+            token=self._token_factory(),
+            host=host,
+            slot=slot,
+            attempt_id=attempt_id,
+            expiry_s=heartbeat + self._ttl,
+            heartbeat_s=heartbeat,
+        )
+        self._leases[lease.token] = lease
+        return lease
