@@ -129,7 +129,7 @@ class LeasePool:
 
     def sweep_expired(self) -> list[str]:
         now = self._now()
-        affected = {ls.host for ls in self._leases.values() if ls.expiry_s < now}
+        affected = {ls.host for ls in self._leases.values() if ls.expiry_s <= now}
         for host in affected:
             self.quarantine(host)
         return sorted(affected)
@@ -152,6 +152,8 @@ def reconcile_host(transport: Transport, pid_file: str, *, grace_s: float = 10.0
         pgid = int(json.loads(result.stdout)["pgid"])
     except (ValueError, KeyError, TypeError):
         return False  # recorded but unreadable -> cannot confirm clean
+    if pgid <= 1:
+        return False  # 0 = caller's own group, 1 = init; never a runner pgid -> keep quarantined
     return terminate_process_group(transport, pgid, grace_s=grace_s)
 
 

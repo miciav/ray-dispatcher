@@ -39,3 +39,17 @@ def test_reconcile_corrupt_pid_file_stays_quarantined():
     t = FakeTransport(run_results=results)
     assert reconcile_host(t, "/x/pid.json") is False  # cannot confirm clean
     assert not any(a[0] == "kill" for a in _runs(t))
+
+
+def test_reconcile_rejects_unsafe_pgid_without_killing():
+    # pgid 0 == the caller's own process group; killing -0 would SIGKILL the
+    # remote shell. A recorded pgid <= 1 is never a real runner group -> stay quarantined.
+    for bad in (0, 1, -5):
+        def results(argv, bad=bad):
+            if argv[0] == "cat":
+                return CommandResult(0, f'{{"pid": 1234, "pgid": {bad}}}', "", 0.0)
+            return CommandResult(0, "", "", 0.0)
+
+        t = FakeTransport(run_results=results)
+        assert reconcile_host(t, "/x/pid.json") is False
+        assert not any(a[0] == "kill" for a in _runs(t))  # never issued a kill

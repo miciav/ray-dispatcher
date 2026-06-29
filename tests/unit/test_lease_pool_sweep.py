@@ -32,6 +32,16 @@ def test_sweep_quarantines_expired_lease_host():
     assert pool.healthy_host_count() == 1
 
 
+def test_sweep_quarantines_at_exact_deadline():
+    # symmetry with heartbeat (which rejects at now >= expiry_s): a lease at the
+    # exact tie now == expiry_s is dead, so sweep_expired must quarantine it too.
+    clock = Clock(1000.0)
+    pool = LeasePool({"a": 1}, lease_ttl_s=60.0, now=clock, token_factory=_tokens())
+    pool.acquire("x")           # deadline exactly 1060
+    clock.advance(60.0)         # now == 1060
+    assert pool.sweep_expired() == ["a"]
+
+
 def test_sweep_keeps_live_leases():
     clock = Clock(1000.0)
     pool = LeasePool({"a": 1}, lease_ttl_s=60.0, now=clock, token_factory=_tokens())
