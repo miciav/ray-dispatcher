@@ -1,5 +1,7 @@
 """ray_dispatcher: a generic, Ray-scheduled dispatcher for subprocess jobs on VMs."""
 
+from .backends.ssh_ray import SshRayBackend
+from .dispatcher import Dispatcher
 from .errors import (
     BatchExistsError,
     BatchFailedError,
@@ -50,6 +52,9 @@ __all__ = [
     "JobResult",
     "HostProvisioningResult",
     "ProvisioningReport",
+    # high-level API
+    "Dispatcher",
+    "SshRayBackend",
     # errors
     "DispatcherError",
     "ConfigurationError",
