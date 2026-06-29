@@ -1,6 +1,6 @@
-"""Scheduling and attempt execution (spec §7, §8.2).
+"""Scheduling and attempt execution (spec §7, §8).
 
-Two concerns live here, both Ray-free so Phase 6 can wrap them:
+Three concerns live here, all Ray-free so Phase 6b can wrap them:
 
 - The lease state machine: `LeasePool` (pure, single-threaded, clock-injected —
   no Ray, no SSH), the async `LeaseService` wrapper, and the `reconcile_host`
@@ -8,12 +8,21 @@ Two concerns live here, both Ray-free so Phase 6 can wrap them:
 - The host-side attempt driver: `execute_attempt` and its helpers
   (`secret_env_map`, `HostRuntime`, `build_runner_manifest`), which run one job
   attempt on one provisioned host over SSH (§7.2–7.9).
+- The job orchestration: `should_retry`, `assemble_job_result`, and `run_job` —
+  the per-job retry loop that drives `execute_attempt` over a `LeaseHandle`,
+  classifies failures, prefers a fresh host on retry, and folds the attempts
+  into a `JobResult` (§8.3, §4.4).
 
-Deferred to Phase 6: the Ray task / actor decoration, the retry loop, timeout +
-process termination (§8.1), and `JobResult` assembly. In particular
-`execute_attempt` blocks for the whole job on one SSH call, so the Phase 6
-wrapper must heartbeat the lease concurrently (§7.1/§8.2) — this driver cannot
-beat while blocked.
+Deferred to Phase 6b: the Ray task / actor decoration; the concurrent lease
+heartbeat (`execute_attempt` blocks for the whole job on one SSH call, so the
+6b wrapper must beat the lease while this driver is blocked, §7.1/§8.2); timeout
++ process termination (§8.1, producing `TIMEOUT`); and the `HOST_LOST` /
+`COLLECTION` failure kinds (`retry_on` lists them, but they originate in the 6b
+heartbeat/collection machinery — `run_job` produces only `SSH`/`INTERNAL` from
+raised failures plus `COMMAND`/`OUTPUT_MISSING` from `execute_attempt`). The 6b
+Ray-task wrapper must also guarantee every job terminates as a `JobResult`,
+catching any stray exception `run_job` does not classify (e.g. a malformed
+remote `result.json`) as a final `INTERNAL` result.
 """
 
 from __future__ import annotations
@@ -27,9 +36,10 @@ import shlex
 import time
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
+from typing import Protocol
 
 from .errors import DispatcherError, ModelValidationError, NoHealthyHostsError
-from .models import AttemptResult, FailureKind, Job, JobStatus, Project
+from .models import AttemptResult, FailureKind, Job, JobResult, JobStatus, Project, RetryPolicy
 from .provisioning import RemoteLayout, RunPaths
 from .results import (
     JobLayout,
@@ -38,7 +48,13 @@ from .results import (
     publish_job_outputs,
     write_attempt_json,
 )
-from .ssh import CommandResult, Transport, terminate_process_group, write_remote_file
+from .ssh import (
+    CommandResult,
+    Transport,
+    TransportError,
+    terminate_process_group,
+    write_remote_file,
+)
 
 
 @dataclass(frozen=True)
@@ -337,6 +353,113 @@ def execute_attempt(
         local.attempt_json(attempt), result, missing_optional=collected.missing_optional
     )
     return result
+
+
+# --- job orchestration (§8.3, §4.4) --------------------------------------------
+
+
+def should_retry(policy: RetryPolicy, kind: FailureKind | None, completed_attempts: int) -> bool:
+    """Decide whether to make another attempt after a failure (spec §8.3).
+
+    Retries only a configured-retryable failure kind, and only while attempts
+    remain. Success and non-retryable kinds (COMMAND/OUTPUT_MISSING/TIMEOUT by
+    default) stop immediately.
+    """
+    if kind is None or kind not in policy.retry_on:
+        return False
+    return completed_attempts < policy.max_attempts
+
+
+def assemble_job_result(
+    job_id: str, batch_id: str, attempts: list[AttemptResult], *, outputs_dir: str
+) -> JobResult:
+    """Fold the attempt history into the job's final result (spec §4.4).
+
+    The final attempt describes returncode/host/error; duration is the total
+    across attempts; output_dir is set only when the final attempt succeeded.
+    """
+    final = attempts[-1]
+    return JobResult(
+        id=job_id,
+        batch_id=batch_id,
+        status=final.status,
+        returncode=final.returncode,
+        duration_s=sum(a.duration_s for a in attempts),
+        host=final.host,
+        output_dir=outputs_dir if final.status is JobStatus.SUCCEEDED else None,
+        attempts=tuple(attempts),
+        error=final.error,
+    )
+
+
+class LeaseHandle(Protocol):
+    """The slice of the lease actor that run_job needs (6b adapts the Ray actor)."""
+
+    def acquire(self, attempt_id: str, *, exclude: Iterable[str] = ()) -> Lease: ...
+
+    def release(self, token: str) -> None: ...
+
+
+def _failed_attempt(
+    n: int, host: str, kind: FailureKind, error: str, local: JobLayout
+) -> AttemptResult:
+    """Build the AttemptResult for an attempt that raised before producing one."""
+    return AttemptResult(
+        number=n,
+        host=host,
+        status=JobStatus.FAILED,
+        returncode=None,
+        duration_s=0.0,
+        stdout_log=str(local.stdout_log(n)),
+        stderr_log=str(local.stderr_log(n)),
+        failure_kind=kind,
+        error=error,
+    )
+
+
+def run_job(
+    job: Job,
+    *,
+    batch_id: str,
+    lease: LeaseHandle,
+    runtime_for: Callable[[str], HostRuntime],
+    transport_for: Callable[[str], Transport],
+    local: JobLayout,
+    policy: RetryPolicy,
+) -> JobResult:
+    """Run one logical job to a terminal JobResult, retrying per policy (spec §8.3).
+
+    Each attempt leases a host (excluding already-tried hosts so retries prefer a
+    fresh VM, §7.1), runs execute_attempt, and classifies the outcome. A raised
+    TransportError becomes an SSH failure and a DispatcherError an INTERNAL
+    failure (both surfaced as AttemptResults). NoHealthyHostsError from acquire
+    propagates. The Phase 6b Ray task wraps this with heartbeat + timeout.
+    """
+    attempts: list[AttemptResult] = []
+    tried: set[str] = set()
+    while True:
+        n = len(attempts) + 1
+        leased = lease.acquire(job.id, exclude=tried)
+        try:
+            result = execute_attempt(
+                transport_for(leased.host), runtime_for(leased.host), job,
+                batch_id=batch_id, attempt=n, local=local,
+            )
+        except TransportError as e:
+            result = _failed_attempt(n, leased.host, FailureKind.SSH, str(e), local)
+        except DispatcherError as e:
+            result = _failed_attempt(n, leased.host, FailureKind.INTERNAL, str(e), local)
+        finally:
+            lease.release(leased.token)
+        attempts.append(result)
+        tried.add(leased.host)
+        if result.status is JobStatus.SUCCEEDED or not should_retry(
+            policy, result.failure_kind, len(attempts)
+        ):
+            break
+    return assemble_job_result(
+        job.id, batch_id, attempts, outputs_dir=str(local.outputs_dir)
+    )
 
 
 class LeaseService:

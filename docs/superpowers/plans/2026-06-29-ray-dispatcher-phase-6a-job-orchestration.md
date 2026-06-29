@@ -75,8 +75,8 @@ Expected: FAIL with `ImportError: cannot import name 'should_retry'`.
 
 - [ ] **Step 3: Write the implementation**
 
-Extend the `models` import in `scheduling.py` to include `RetryPolicy` and `JobResult` (used in Task 2/3 too): change the line to
-`from .models import AttemptResult, FailureKind, Job, JobResult, JobStatus, Project, RetryPolicy`.
+Extend the `models` import in `scheduling.py` to include `RetryPolicy` (used by `should_retry`): change the line to
+`from .models import AttemptResult, FailureKind, Job, JobStatus, Project, RetryPolicy`. (Do NOT import `JobResult` yet — it is unused until Task 2, and ruff `F401` would flag a premature import. Task 2 adds it.)
 
 Append `should_retry` at module level after `execute_attempt` (before `class LeaseService`):
 
@@ -166,6 +166,9 @@ Run: `uv run pytest tests/unit/test_assemble_job_result.py -v`
 Expected: FAIL with `ImportError: cannot import name 'assemble_job_result'`.
 
 - [ ] **Step 3: Write the implementation**
+
+First extend the `models` import to add `JobResult` (now used here):
+`from .models import AttemptResult, FailureKind, Job, JobResult, JobStatus, Project, RetryPolicy`.
 
 Append `assemble_job_result` after `should_retry`:
 
