@@ -7,12 +7,15 @@ reconciliation probe.
 
 from __future__ import annotations
 
+import asyncio
+import json
 import secrets
 import time
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 
-from .errors import ModelValidationError
+from .errors import ModelValidationError, NoHealthyHostsError
+from .ssh import Transport, terminate_process_group
 
 
 @dataclass(frozen=True)
@@ -110,6 +113,8 @@ class LeasePool:
         if lease is None:
             return False
         now = self._now()
+        if now >= lease.expiry_s:
+            return False  # past deadline (even if not yet swept) -> logically dead
         self._leases[token] = replace(lease, heartbeat_s=now, expiry_s=now + self._ttl)
         return True
 
@@ -124,7 +129,92 @@ class LeasePool:
 
     def sweep_expired(self) -> list[str]:
         now = self._now()
-        affected = {ls.host for ls in self._leases.values() if ls.expiry_s < now}
+        affected = {ls.host for ls in self._leases.values() if ls.expiry_s <= now}
         for host in affected:
             self.quarantine(host)
         return sorted(affected)
+
+    def quarantined_hosts(self) -> list[str]:
+        return sorted(self._quarantined)
+
+
+def reconcile_host(transport: Transport, pid_file: str, *, grace_s: float = 10.0) -> bool:
+    """Terminate any orphaned process group recorded for a lost attempt (spec §8.2/§8.1).
+
+    Returns True when the host is confirmed clean: no pid file recorded, or the
+    recorded process group is gone after SIGTERM/SIGKILL. Returns False when a pid
+    file exists but cannot be parsed — the host stays quarantined for manual recovery.
+    """
+    result = transport.run(["cat", pid_file])
+    if result.returncode != 0:
+        return True  # no recorded process -> nothing orphaned
+    try:
+        pgid = int(json.loads(result.stdout)["pgid"])
+    except (ValueError, KeyError, TypeError):
+        return False  # recorded but unreadable -> cannot confirm clean
+    if pgid <= 1:
+        return False  # 0 = caller's own group, 1 = init; never a runner pgid -> keep quarantined
+    return terminate_process_group(transport, pgid, grace_s=grace_s)
+
+
+class LeaseService:
+    """Async wrapper over LeasePool, the body of the Ray HostLease actor (§7.1).
+
+    Pure in-memory async state guarded by one asyncio.Condition — no SSH, so no
+    method blocks the event loop. Phase 6 decorates this class with
+    ``ray.remote(num_cpus=0)``; reconciliation (``reconcile_host``) runs off the
+    actor and reports back via ``mark_reconciled``.
+    """
+
+    def __init__(
+        self,
+        hosts: Mapping[str, int],
+        *,
+        lease_ttl_s: float = 60.0,
+        now: Callable[[], float] = time.monotonic,
+        token_factory: Callable[[], str] = lambda: secrets.token_hex(16),
+    ) -> None:
+        self._pool = LeasePool(
+            hosts, lease_ttl_s=lease_ttl_s, now=now, token_factory=token_factory
+        )
+        self._cond = asyncio.Condition()
+
+    async def acquire(self, attempt_id: str, exclude: Iterable[str] = ()) -> Lease:
+        async with self._cond:
+            while True:
+                lease = self._pool.acquire(attempt_id, exclude=exclude)
+                if lease is not None:
+                    return lease
+                if self._pool.healthy_host_count() == 0:
+                    raise NoHealthyHostsError("no healthy hosts remain")
+                await self._cond.wait()
+
+    async def release(self, token: str) -> None:
+        async with self._cond:
+            self._pool.release(token)
+            self._cond.notify_all()
+
+    async def heartbeat(self, token: str) -> bool:
+        async with self._cond:
+            return self._pool.heartbeat(token)
+
+    async def sweep(self) -> list[str]:
+        async with self._cond:
+            hosts = self._pool.sweep_expired()
+            if hosts:
+                self._cond.notify_all()  # capacity may have dropped -> re-check waiters
+            return hosts
+
+    async def quarantine(self, host: str) -> None:
+        async with self._cond:
+            self._pool.quarantine(host)
+            self._cond.notify_all()
+
+    async def mark_reconciled(self, host: str) -> None:
+        async with self._cond:
+            self._pool.mark_reconciled(host)
+            self._cond.notify_all()
+
+    async def quarantined_hosts(self) -> list[str]:
+        async with self._cond:
+            return self._pool.quarantined_hosts()
