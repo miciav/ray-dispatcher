@@ -128,3 +128,6 @@ class LeasePool:
         for host in affected:
             self.quarantine(host)
         return sorted(affected)
+
+    def quarantined_hosts(self) -> list[str]:
+        return sorted(self._quarantined)
