@@ -9,16 +9,25 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import posixpath
 import secrets
+import shlex
 import time
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 
-from .errors import ModelValidationError, NoHealthyHostsError
-from .models import Job, Project
+from .errors import DispatcherError, ModelValidationError, NoHealthyHostsError
+from .models import AttemptResult, FailureKind, Job, JobStatus, Project
 from .provisioning import RemoteLayout, RunPaths
-from .ssh import Transport, terminate_process_group
+from .results import (
+    JobLayout,
+    collect_outputs,
+    create_attempt_dir,
+    publish_job_outputs,
+    write_attempt_json,
+)
+from .ssh import CommandResult, Transport, terminate_process_group, write_remote_file
 
 
 @dataclass(frozen=True)
@@ -209,6 +218,108 @@ def build_runner_manifest(
         "pid_path": run.pid,
         "result_path": run.result,
     }
+
+
+def _run_checked(transport: Transport, argv: list[str], what: str) -> CommandResult:
+    """Run a library-controlled remote command; raise on nonzero (no user strings)."""
+    result = transport.run(argv)
+    if result.returncode != 0:
+        raise DispatcherError(f"{what} failed: {result.stderr.strip()}")
+    return result
+
+
+def execute_attempt(
+    transport: Transport,
+    runtime: HostRuntime,
+    job: Job,
+    *,
+    batch_id: str,
+    attempt: int,
+    local: JobLayout,
+) -> AttemptResult:
+    """Run one job attempt on one provisioned host over SSH (spec §7 steps 2-9).
+
+    Returns the AttemptResult and, on success, publishes outputs to the job's
+    local outputs dir. Setup/transport failures propagate for the Phase 6 wrapper
+    to classify (SSH/HOST_LOST/INTERNAL); this driver classifies only the command
+    outcome (COMMAND / OUTPUT_MISSING / success).
+    """
+    run = runtime.layout.run_paths(batch_id, job.id, attempt)
+    venv = runtime.layout.env_venv(runtime.environment_digest)
+    runner = runtime.layout.runner(runtime.runner_digest)
+    attempt_dir = create_attempt_dir(local, attempt)  # local (§9.1)
+
+    # §7.2 fresh remote run dir; the leaf mkdir (no -p) errors if it exists.
+    parent = posixpath.dirname(run.base)
+    _run_checked(
+        transport,
+        ["sh", "-c", f"mkdir -p {shlex.quote(parent)} && mkdir {shlex.quote(run.base)} "
+                     f"&& mkdir {shlex.quote(run.run_root)}"],
+        "create run dir",
+    )
+    # §7.3 copy provisioned source on the VM; .venv -> the immutable env.
+    _run_checked(
+        transport,
+        ["sh", "-c", f"rsync -a {shlex.quote(runtime.layout.source)}/ {shlex.quote(run.run_root)}/ "
+                     f"&& ln -s {shlex.quote(venv)} {shlex.quote(run.venv)}"],
+        "copy source",
+    )
+    # §7.4 push each input to its explicit (normalized, run-root-relative) destination.
+    for inp in job.inputs:
+        remote_dest = f"{run.run_root}/{inp.destination}"
+        _run_checked(
+            transport,
+            ["sh", "-c", f"mkdir -p {shlex.quote(posixpath.dirname(remote_dest))}"],
+            "input dir",
+        )
+        local_src = inp.source if os.path.isabs(inp.source) else os.path.join(
+            runtime.project_path, inp.source
+        )
+        transport.push(local_src, remote_dest)
+    # §7.5 write the runner manifest (no shell assembled from user strings).
+    manifest = build_runner_manifest(
+        job, run_root=run.run_root, venv=venv, run=run, secret_env=runtime.secret_env
+    )
+    write_remote_file(transport, run.manifest, json.dumps(manifest))
+    # §7.6 invoke the versioned runner (it Popens argv, records pid/pgid). No
+    # timeout here: enforcement + termination are Phase 6 (§8.1).
+    _run_checked(transport, ["python3", runner, run.manifest], "invoke runner")
+    # parse the runner's result.json (returncode + monotonic duration, §7).
+    info = json.loads(_run_checked(transport, ["cat", run.result], "read result").stdout)
+    returncode = int(info["returncode"])
+    duration_s = float(info["duration_s"])
+    # §7.7 pull streamed logs into the local attempt dir.
+    transport.pull(run.stdout, str(local.stdout_log(attempt)))
+    transport.pull(run.stderr, str(local.stderr_log(attempt)))
+    # §7.8 collect declared outputs into attempt-scoped staging.
+    staging = attempt_dir / "outputs"
+    staging.mkdir()
+    collected = collect_outputs(transport, run.run_root, job.outputs, staging)
+    # classify: a command failure dominates; otherwise a missing required output
+    # is OUTPUT_MISSING (§7.8 / §9.3).
+    if returncode != 0:
+        status, failure_kind = JobStatus.FAILED, FailureKind.COMMAND
+    elif collected.missing_required:
+        status, failure_kind = JobStatus.FAILED, FailureKind.OUTPUT_MISSING
+    else:
+        status, failure_kind = JobStatus.SUCCEEDED, None
+    if status is JobStatus.SUCCEEDED:
+        publish_job_outputs(staging, local.outputs_dir)  # §7.9 atomic publish
+    result = AttemptResult(
+        number=attempt,
+        host=runtime.host,
+        status=status,
+        returncode=returncode,
+        duration_s=duration_s,
+        stdout_log=str(local.stdout_log(attempt)),
+        stderr_log=str(local.stderr_log(attempt)),
+        failure_kind=failure_kind,
+        error=None,
+    )
+    write_attempt_json(
+        local.attempt_json(attempt), result, missing_optional=collected.missing_optional
+    )
+    return result
 
 
 class LeaseService:
