@@ -110,6 +110,8 @@ class LeasePool:
         if lease is None:
             return False
         now = self._now()
+        if now >= lease.expiry_s:
+            return False  # past deadline (even if not yet swept) -> logically dead
         self._leases[token] = replace(lease, heartbeat_s=now, expiry_s=now + self._ttl)
         return True
 
