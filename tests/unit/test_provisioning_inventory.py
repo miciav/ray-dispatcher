@@ -66,6 +66,7 @@ def test_provision_partial_failure_proceeds_with_healthy(tmp_path):
 
     outcome = provision(inv, _project(tmp_path), runner_path=_runner(tmp_path),
                         transport_factory=factory)
+    assert [r.host for r in outcome.report.hosts] == ["good", "bad"]  # inventory order preserved
     by_host = {r.host: r for r in outcome.report.hosts}
     assert by_host["good"].succeeded and not by_host["bad"].succeeded
     assert set(outcome.sessions) == {"ubuntu@good:22"}  # only the healthy host kept
@@ -90,3 +91,29 @@ def test_no_healthy_hosts_raises(tmp_path):
     with pytest.raises(NoHealthyHostsError):
         provision(inv, _project(tmp_path), runner_path=_runner(tmp_path),
                   transport_factory=lambda h: FakeTransport(run_results=_fail))
+
+
+def test_provision_unreachable_host_does_not_crash_and_keeps_healthy(tmp_path):
+    # a host whose transport raises on use must be marked unavailable, NOT crash the run,
+    # and must not strand the healthy host's lock/heartbeat.
+    inv = Inventory((
+        RemoteHost(host="good", user="ubuntu"),
+        RemoteHost(host="down", user="ubuntu"),
+    ))
+
+    def factory(h):
+        if h.host == "good":
+            return FakeTransport(run_results=_ok)
+
+        def boom(argv):
+            raise RuntimeError("connection refused")
+
+        return FakeTransport(run_results=boom)
+
+    outcome = provision(inv, _project(tmp_path), runner_path=_runner(tmp_path),
+                        transport_factory=factory)  # must NOT raise
+    by_host = {r.host: r for r in outcome.report.hosts}
+    assert by_host["good"].succeeded and not by_host["down"].succeeded
+    assert "connection refused" in by_host["down"].error
+    assert set(outcome.sessions) == {"ubuntu@good:22"}
+    outcome.release_all()

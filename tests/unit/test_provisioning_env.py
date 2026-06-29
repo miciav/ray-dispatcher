@@ -1,5 +1,5 @@
 from ray_dispatcher.models import Project, RemoteHost
-from ray_dispatcher.provisioning import HostProvisioner, RemoteLayout
+from ray_dispatcher.provisioning import SYNC_FLAGS, HostProvisioner, RemoteLayout
 from ray_dispatcher.ssh import CommandResult, FakeTransport
 
 
@@ -35,6 +35,7 @@ def test_publish_env_skips_when_already_valid(tmp_path):
     p = _prov(tmp_path, results)
     p._publish_env(UV)
     assert not any("uv" in s and "sync" in s for s in _scripts(p.t))  # no sync ran
+    assert any("test -x" in s and "bin/python" in s for s in _scripts(p.t))
 
 
 def test_publish_env_syncs_smoke_checks_and_publishes(tmp_path):
@@ -51,6 +52,8 @@ def test_publish_env_syncs_smoke_checks_and_publishes(tmp_path):
     sync = [s for s in scripts if "uv" in s and "sync" in s][0]
     assert "UV_PROJECT_ENVIRONMENT=" in sync
     assert "--locked" in sync and "--no-install-project" in sync and "--no-default-groups" in sync
+    for flag in SYNC_FLAGS:
+        assert flag in sync
     assert "--group dev" in sync
     assert "--python 3.10.18" in sync
     smoke = [s for s in scripts if "import sys" in s][0]

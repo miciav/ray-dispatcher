@@ -371,11 +371,14 @@ def provision(
     def work(host: RemoteHost) -> tuple[
         HostProvisioningResult, tuple[SessionLock, HeartbeatThread] | None
     ]:
-        prov = HostProvisioner(
-            factory(host), project, host,
-            runner_path=runner_path, session_id=sid, force=force, min_disk_mb=min_disk_mb,
-        )
-        return prov.provision()
+        try:
+            prov = HostProvisioner(
+                factory(host), project, host,
+                runner_path=runner_path, session_id=sid, force=force, min_disk_mb=min_disk_mb,
+            )
+            return prov.provision()
+        except Exception as exc:  # noqa: BLE001 — factory/connect failure => host unavailable, never crash the run
+            return HostProvisioningResult(host.host, False, None, None, error=str(exc)), None
 
     _SessionPair = tuple[SessionLock, HeartbeatThread] | None
     results: dict[str, tuple[HostProvisioningResult, _SessionPair]] = {}

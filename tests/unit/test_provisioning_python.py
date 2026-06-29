@@ -46,3 +46,13 @@ def test_install_python_version_mismatch_raises():
 
     with pytest.raises(_StepError, match="3.10.18"):
         _prov(results)._install_python(UV)
+
+
+def test_install_python_find_empty_raises():
+    def results(argv):
+        if argv[:3] == [UV, "python", "find"]:
+            return CommandResult(0, "", "", 0.0)  # empty -> cannot locate
+        return CommandResult(0, "", "", 0.0)
+
+    with pytest.raises(_StepError, match="could not locate"):
+        _prov(results)._install_python(UV)
