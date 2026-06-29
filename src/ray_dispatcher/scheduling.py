@@ -27,6 +27,7 @@ import shlex
 import time
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
+from typing import Protocol
 
 from .errors import DispatcherError, ModelValidationError, NoHealthyHostsError
 from .models import AttemptResult, FailureKind, Job, JobResult, JobStatus, Project, RetryPolicy
@@ -38,7 +39,7 @@ from .results import (
     publish_job_outputs,
     write_attempt_json,
 )
-from .ssh import CommandResult, Transport, terminate_process_group, write_remote_file
+from .ssh import CommandResult, Transport, TransportError, terminate_process_group, write_remote_file
 
 
 @dataclass(frozen=True)
@@ -370,6 +371,76 @@ def assemble_job_result(
         output_dir=outputs_dir if final.status is JobStatus.SUCCEEDED else None,
         attempts=tuple(attempts),
         error=final.error,
+    )
+
+
+class LeaseHandle(Protocol):
+    """The slice of the lease actor that run_job needs (6b adapts the Ray actor)."""
+
+    def acquire(self, attempt_id: str, *, exclude: Iterable[str] = ()) -> Lease: ...
+
+    def release(self, token: str) -> None: ...
+
+
+def _failed_attempt(
+    n: int, host: str, kind: FailureKind, error: str, local: JobLayout
+) -> AttemptResult:
+    """Build the AttemptResult for an attempt that raised before producing one."""
+    return AttemptResult(
+        number=n,
+        host=host,
+        status=JobStatus.FAILED,
+        returncode=None,
+        duration_s=0.0,
+        stdout_log=str(local.stdout_log(n)),
+        stderr_log=str(local.stderr_log(n)),
+        failure_kind=kind,
+        error=error,
+    )
+
+
+def run_job(
+    job: Job,
+    *,
+    batch_id: str,
+    lease: LeaseHandle,
+    runtime_for: Callable[[str], HostRuntime],
+    transport_for: Callable[[str], Transport],
+    local: JobLayout,
+    policy: RetryPolicy,
+) -> JobResult:
+    """Run one logical job to a terminal JobResult, retrying per policy (spec §8.3).
+
+    Each attempt leases a host (excluding already-tried hosts so retries prefer a
+    fresh VM, §7.1), runs execute_attempt, and classifies the outcome. A raised
+    TransportError becomes an SSH failure and a DispatcherError an INTERNAL
+    failure (both surfaced as AttemptResults). NoHealthyHostsError from acquire
+    propagates. The Phase 6b Ray task wraps this with heartbeat + timeout.
+    """
+    attempts: list[AttemptResult] = []
+    tried: set[str] = set()
+    while True:
+        n = len(attempts) + 1
+        leased = lease.acquire(job.id, exclude=tried)
+        try:
+            result = execute_attempt(
+                transport_for(leased.host), runtime_for(leased.host), job,
+                batch_id=batch_id, attempt=n, local=local,
+            )
+        except TransportError as e:
+            result = _failed_attempt(n, leased.host, FailureKind.SSH, str(e), local)
+        except DispatcherError as e:
+            result = _failed_attempt(n, leased.host, FailureKind.INTERNAL, str(e), local)
+        finally:
+            lease.release(leased.token)
+        attempts.append(result)
+        tried.add(leased.host)
+        if result.status is JobStatus.SUCCEEDED or not should_retry(
+            policy, result.failure_kind, len(attempts)
+        ):
+            break
+    return assemble_job_result(
+        job.id, batch_id, attempts, outputs_dir=str(local.outputs_dir)
     )
 
 
