@@ -9,14 +9,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import posixpath
 import secrets
 import time
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 
 from .errors import ModelValidationError, NoHealthyHostsError
-from .models import Project
-from .provisioning import RemoteLayout
+from .models import Job, Project
+from .provisioning import RemoteLayout, RunPaths
 from .ssh import Transport, terminate_process_group
 
 
@@ -168,6 +169,45 @@ def secret_env_map(project: Project, layout: RemoteLayout) -> dict[str, str]:
         s.env_var: f"{layout.secrets}/{s.remote_name}"
         for s in project.secrets
         if s.env_var is not None
+    }
+
+
+@dataclass(frozen=True)
+class HostRuntime:
+    """Immutable per-host execution context, assembled once after provisioning."""
+
+    host: str
+    layout: RemoteLayout
+    environment_digest: str
+    runner_digest: str
+    project_path: str
+    secret_env: Mapping[str, str]
+
+
+def build_runner_manifest(
+    job: Job,
+    *,
+    run_root: str,
+    venv: str,
+    run: RunPaths,
+    secret_env: Mapping[str, str],
+) -> dict[str, object]:
+    """Build the JSON manifest consumed by remote_runner.py (spec §7.5).
+
+    The job argv and env travel as data here; remote_runner Popens argv with no
+    shell, prepends venv_bin to PATH, sets VIRTUAL_ENV, and exports secret_env.
+    """
+    return {
+        "argv": list(job.command),
+        "cwd": posixpath.normpath(f"{run_root}/{job.cwd}"),
+        "env": dict(job.env),
+        "secret_env": dict(secret_env),
+        "venv_bin": f"{venv}/bin",
+        "virtual_env": venv,
+        "stdout_path": run.stdout,
+        "stderr_path": run.stderr,
+        "pid_path": run.pid,
+        "result_path": run.result,
     }
 
 
