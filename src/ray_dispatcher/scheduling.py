@@ -15,6 +15,8 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 
 from .errors import ModelValidationError, NoHealthyHostsError
+from .models import Project
+from .provisioning import RemoteLayout
 from .ssh import Transport, terminate_process_group
 
 
@@ -155,6 +157,18 @@ def reconcile_host(transport: Transport, pid_file: str, *, grace_s: float = 10.0
     if pgid <= 1:
         return False  # 0 = caller's own group, 1 = init; never a runner pgid -> keep quarantined
     return terminate_process_group(transport, pgid, grace_s=grace_s)
+
+
+def secret_env_map(project: Project, layout: RemoteLayout) -> dict[str, str]:
+    """Map each declared secret's env var to its absolute remote path (spec §4.2).
+
+    Secrets without an ``env_var`` are provisioned but not exported into the job.
+    """
+    return {
+        s.env_var: f"{layout.secrets}/{s.remote_name}"
+        for s in project.secrets
+        if s.env_var is not None
+    }
 
 
 class LeaseService:
