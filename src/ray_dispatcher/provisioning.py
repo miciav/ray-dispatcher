@@ -36,6 +36,45 @@ class _StepError(Exception):
     turned into a failed HostProvisioningResult; never escapes provisioning.py."""
 
 
+@dataclass(frozen=True)
+class RunPaths:
+    """Absolute remote paths inside one attempt's run dir (spec §6.1, §7).
+
+    Control files (manifest/logs/pid/result) live in ``base``; the job runs in
+    ``run_root`` (a copy of the provisioned source) so they never pollute outputs.
+    """
+
+    base: str
+
+    @property
+    def run_root(self) -> str:
+        return f"{self.base}/run"
+
+    @property
+    def venv(self) -> str:
+        return f"{self.run_root}/.venv"
+
+    @property
+    def manifest(self) -> str:
+        return f"{self.base}/manifest.json"
+
+    @property
+    def stdout(self) -> str:
+        return f"{self.base}/stdout.log"
+
+    @property
+    def stderr(self) -> str:
+        return f"{self.base}/stderr.log"
+
+    @property
+    def pid(self) -> str:
+        return f"{self.base}/pid.json"
+
+    @property
+    def result(self) -> str:
+        return f"{self.base}/result.json"
+
+
 class RemoteLayout:
     """Absolute remote paths under <home>/.ray_dispatcher (spec §6.1)."""
 
@@ -65,6 +104,12 @@ class RemoteLayout:
 
     def uv_bin(self, uv_version: str) -> str:
         return f"{self.uv_root}/{uv_version}/uv"
+
+    def run_dir(self, batch_id: str, job_id: str, attempt: int) -> str:
+        return f"{self.root}/runs/{batch_id}/{job_id}/{attempt}"
+
+    def run_paths(self, batch_id: str, job_id: str, attempt: int) -> RunPaths:
+        return RunPaths(self.run_dir(batch_id, job_id, attempt))
 
 
 class HostProvisioner:
