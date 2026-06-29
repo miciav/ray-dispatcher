@@ -3,7 +3,7 @@ import ray
 from ray_dispatcher.backends.ssh_ray import HostLease, _attempt_task
 from ray_dispatcher.models import (
     Job,
-    Project,
+    JobStatus,
     RemoteHost,
     RetryPolicy,
 )
@@ -11,10 +11,6 @@ from ray_dispatcher.provisioning import RemoteLayout
 from ray_dispatcher.results import JobLayout
 from ray_dispatcher.scheduling import HostRuntime
 from ray_dispatcher.ssh import CommandResult, FakeTransport
-
-
-def _project():
-    return Project(path="/proj", project_id="dfaas", python="3.10.18", uv_version="0.11.25")
 
 
 def _canned_runtime(host_name: str) -> HostRuntime:
@@ -60,7 +56,6 @@ def test_attempt_task_succeeds_with_fake_transport(tmp_path):
             heartbeat_interval_s=1.0,
         )
         result = ray.get(ref)
-        from ray_dispatcher.models import JobStatus
         assert result.status == JobStatus.SUCCEEDED
         assert result.id == "job1"
         # result.json written to disk
@@ -91,7 +86,6 @@ def test_attempt_task_catch_all_returns_internal_on_unexpected_exception(tmp_pat
             job, "batch1", local, runtimes, inv_hosts, actor, _bad_transport, RetryPolicy(),
         )
         result = ray.get(ref)
-        from ray_dispatcher.models import JobStatus
         assert result.status == JobStatus.FAILED
         assert result.error is not None and "INTERNAL" in result.error
     finally:
