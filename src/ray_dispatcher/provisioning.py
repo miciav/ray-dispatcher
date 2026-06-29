@@ -10,13 +10,17 @@ All interpolated data is shlex-quoted; no user string is ever shelled (§7).
 from __future__ import annotations
 
 import json
+import secrets as _secrets
 import shlex
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
 
 from .digests import environment_digest, runner_digest, source_digest
-from .errors import HostInUseError
+from .errors import HostInUseError, NoHealthyHostsError, ProvisioningError
 from .locking import HeartbeatThread, SessionLock
-from .models import HostProvisioningResult, Project, RemoteHost
-from .ssh import CommandResult, Transport
+from .models import HostProvisioningResult, Inventory, Project, ProvisioningReport, RemoteHost
+from .ssh import CommandResult, SshConfig, SshTransport, Transport
 
 # Base sync flags shared by environment_digest and the uv sync invocation (§6.3.6).
 SYNC_FLAGS = (
@@ -326,3 +330,76 @@ class HostProvisioner:
                 self.host.host, False, source_dig, env_dig, error=str(exc)
             ), None
         return HostProvisioningResult(self.host.host, True, source_dig, env_dig), (lock, hb)
+
+
+def _label(host: RemoteHost) -> str:
+    return f"{host.user}@{host.host}:{host.port}"
+
+
+@dataclass
+class ProvisioningOutcome:
+    """Report plus the live session locks for healthy hosts (held until teardown)."""
+
+    report: ProvisioningReport
+    sessions: dict[str, tuple[SessionLock, HeartbeatThread]] = field(default_factory=dict)
+
+    def release_all(self) -> None:
+        for lock, hb in self.sessions.values():
+            hb.stop()  # stop the heartbeat before releasing (avoids a beat/rm race)
+            lock.release()
+        self.sessions = {}
+
+
+def _default_transport(host: RemoteHost) -> Transport:
+    return SshTransport(SshConfig.from_host(host))
+
+
+def provision(
+    inventory: Inventory,
+    project: Project,
+    *,
+    runner_path: str,
+    require_all_hosts: bool = False,
+    force: bool = False,
+    transport_factory: Callable[[RemoteHost], Transport] | None = None,
+    session_id: str | None = None,
+    min_disk_mb: int = 500,
+) -> ProvisioningOutcome:
+    factory = transport_factory or _default_transport
+    sid = session_id or _secrets.token_hex(16)
+
+    def work(host: RemoteHost) -> tuple[
+        HostProvisioningResult, tuple[SessionLock, HeartbeatThread] | None
+    ]:
+        prov = HostProvisioner(
+            factory(host), project, host,
+            runner_path=runner_path, session_id=sid, force=force, min_disk_mb=min_disk_mb,
+        )
+        return prov.provision()
+
+    _SessionPair = tuple[SessionLock, HeartbeatThread] | None
+    results: dict[str, tuple[HostProvisioningResult, _SessionPair]] = {}
+    with ThreadPoolExecutor(max_workers=len(inventory.hosts)) as pool:
+        futures = {pool.submit(work, h): h for h in inventory.hosts}
+        for fut in futures:
+            host = futures[fut]
+            results[_label(host)] = fut.result()
+
+    report = ProvisioningReport(tuple(results[_label(h)][0] for h in inventory.hosts))
+    # Keep only the live sessions of healthy hosts. An explicit loop lets mypy
+    # narrow `sess` to a concrete tuple inside the `if` (a dict comprehension would not).
+    sessions: dict[str, tuple[SessionLock, HeartbeatThread]] = {}
+    for host in inventory.hosts:
+        sess = results[_label(host)][1]
+        if sess is not None:
+            sessions[_label(host)] = sess
+    outcome = ProvisioningOutcome(report, sessions)
+
+    healthy = [r for r in report.hosts if r.succeeded]
+    if require_all_hosts and len(healthy) != len(inventory.hosts):
+        outcome.release_all()
+        raise ProvisioningError(report, "require_all_hosts=True: not every host provisioned")
+    if not healthy:
+        outcome.release_all()
+        raise NoHealthyHostsError("no host provisioned successfully")
+    return outcome
