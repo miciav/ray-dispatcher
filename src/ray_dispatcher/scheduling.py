@@ -33,6 +33,7 @@ import os
 import posixpath
 import secrets
 import shlex
+import threading
 import time
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
@@ -314,9 +315,49 @@ def execute_attempt(
     # §7.5 write the runner manifest (no shell assembled from user strings).
     manifest = build_runner_manifest(job, venv=venv, run=run, secret_env=runtime.secret_env)
     write_remote_file(transport, run.manifest, json.dumps(manifest))
-    # §7.6 invoke the versioned runner (it Popens argv, records pid/pgid). No
-    # timeout here: enforcement + termination are Phase 6 (§8.1).
-    _run_checked(transport, ["python3", runner, run.manifest], "invoke runner")
+    # §7.6 invoke the versioned runner. Timeout enforcement §8.1:
+    # run in a daemon thread so we can terminate the remote process if timeout_s elapses.
+    if job.timeout_s is not None:
+        _result: list[CommandResult] = []
+        _exc: list[BaseException] = []
+
+        def _invoke() -> None:
+            try:
+                _result.append(
+                    _run_checked(transport, ["python3", runner, run.manifest], "invoke runner")
+                )
+            except BaseException as e:
+                _exc.append(e)
+
+        _t = threading.Thread(target=_invoke, daemon=True)
+        _t.start()
+        _t.join(timeout=job.timeout_s)
+
+        if _t.is_alive():
+            # Timed out — best-effort terminate the remote process group (§8.1).
+            try:
+                pgid_info = json.loads(transport.run(["cat", run.pid]).stdout)
+                pgid = int(pgid_info.get("pgid", -1))
+                if pgid > 1:
+                    terminate_process_group(transport, pgid, grace_s=10.0)
+            except Exception:
+                pass  # best-effort: PID file may not exist yet or process may have exited
+            return AttemptResult(
+                number=attempt,
+                host=runtime.host,
+                status=JobStatus.TIMED_OUT,
+                returncode=None,
+                duration_s=float(job.timeout_s),
+                stdout_log=str(local.stdout_log(attempt)),
+                stderr_log=str(local.stderr_log(attempt)),
+                failure_kind=FailureKind.TIMEOUT,
+                error="job timed out",
+            )
+
+        if _exc:
+            raise _exc[0]  # re-raise SSH/dispatcher exception from the thread
+    else:
+        _run_checked(transport, ["python3", runner, run.manifest], "invoke runner")
     # parse the runner's result.json (returncode + monotonic duration, §7).
     info = json.loads(_run_checked(transport, ["cat", run.result], "read result").stdout)
     returncode = int(info["returncode"])
