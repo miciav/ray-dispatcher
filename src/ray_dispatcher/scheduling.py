@@ -39,7 +39,13 @@ from .results import (
     publish_job_outputs,
     write_attempt_json,
 )
-from .ssh import CommandResult, Transport, TransportError, terminate_process_group, write_remote_file
+from .ssh import (
+    CommandResult,
+    Transport,
+    TransportError,
+    terminate_process_group,
+    write_remote_file,
+)
 
 
 @dataclass(frozen=True)
