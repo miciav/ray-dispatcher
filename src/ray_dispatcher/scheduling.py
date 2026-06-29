@@ -29,7 +29,7 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 
 from .errors import DispatcherError, ModelValidationError, NoHealthyHostsError
-from .models import AttemptResult, FailureKind, Job, JobStatus, Project, RetryPolicy
+from .models import AttemptResult, FailureKind, Job, JobResult, JobStatus, Project, RetryPolicy
 from .provisioning import RemoteLayout, RunPaths
 from .results import (
     JobLayout,
@@ -349,6 +349,28 @@ def should_retry(policy: RetryPolicy, kind: FailureKind | None, completed_attemp
     if kind is None or kind not in policy.retry_on:
         return False
     return completed_attempts < policy.max_attempts
+
+
+def assemble_job_result(
+    job_id: str, batch_id: str, attempts: list[AttemptResult], *, outputs_dir: str
+) -> JobResult:
+    """Fold the attempt history into the job's final result (spec §4.4).
+
+    The final attempt describes returncode/host/error; duration is the total
+    across attempts; output_dir is set only when the final attempt succeeded.
+    """
+    final = attempts[-1]
+    return JobResult(
+        id=job_id,
+        batch_id=batch_id,
+        status=final.status,
+        returncode=final.returncode,
+        duration_s=sum(a.duration_s for a in attempts),
+        host=final.host,
+        output_dir=outputs_dir if final.status is JobStatus.SUCCEEDED else None,
+        attempts=tuple(attempts),
+        error=final.error,
+    )
 
 
 class LeaseService:
