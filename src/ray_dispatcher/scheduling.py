@@ -29,7 +29,7 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 
 from .errors import DispatcherError, ModelValidationError, NoHealthyHostsError
-from .models import AttemptResult, FailureKind, Job, JobResult, JobStatus, Project, RetryPolicy
+from .models import AttemptResult, FailureKind, Job, JobStatus, Project, RetryPolicy
 from .provisioning import RemoteLayout, RunPaths
 from .results import (
     JobLayout,
