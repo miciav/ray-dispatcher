@@ -28,7 +28,8 @@ from ..models import (
     RetryPolicy,
 )
 from ..provisioning import ProvisioningOutcome, RemoteLayout, _default_transport, provision
-from ..scheduling import HostRuntime, Lease, LeaseService, secret_env_map
+from ..results import JobLayout, write_result_json
+from ..scheduling import HostRuntime, Lease, LeaseService, run_job, secret_env_map
 from ..ssh import Transport
 from .base import ExecutionBackend
 
@@ -74,6 +75,50 @@ class _ActorLeaseHandle:
                 break
             if not alive:
                 break
+
+
+@ray.remote(num_cpus=0, resources={"vm_slot": 1}, max_retries=0)
+def _attempt_task(
+    job: Job,
+    batch_id: str,
+    local: JobLayout,
+    runtimes: dict[str, HostRuntime],
+    inv_hosts: dict[str, RemoteHost],
+    actor: ray.actor.ActorHandle,  # type: ignore[type-arg]
+    transport_factory: Callable[[RemoteHost], Transport],
+    policy: RetryPolicy,
+    heartbeat_interval_s: float = 5.0,
+) -> JobResult:
+    """Ray task: run one logical job; terminates as a JobResult (§3.2.3, §6a residual)."""
+    lease_handle = _ActorLeaseHandle(actor, heartbeat_interval_s=heartbeat_interval_s)
+    try:
+        result = run_job(
+            job,
+            batch_id=batch_id,
+            lease=lease_handle,
+            runtime_for=runtimes.__getitem__,
+            transport_for=lambda host: transport_factory(inv_hosts[host]),
+            local=local,
+            policy=policy,
+        )
+        write_result_json(local.result_json, result)
+        return result
+    except ray.exceptions.TaskCancelledError:
+        cancelled = JobResult(
+            id=job.id, batch_id=batch_id, status=JobStatus.CANCELLED,
+            returncode=None, duration_s=0.0, host=None, output_dir=None,
+            attempts=(), error="cancelled",
+        )
+        write_result_json(local.result_json, cancelled)
+        return cancelled
+    except Exception as exc:
+        internal = JobResult(
+            id=job.id, batch_id=batch_id, status=JobStatus.FAILED,
+            returncode=None, duration_s=0.0, host=None, output_dir=None,
+            attempts=(), error=f"INTERNAL: {type(exc).__name__}: {exc}",
+        )
+        write_result_json(local.result_json, internal)
+        return internal
 
 
 class SshRayBackend(ExecutionBackend):
