@@ -1,8 +1,19 @@
-"""Scheduling state machine: per-host slot leases with quarantine (spec §7.1, §8.2).
+"""Scheduling and attempt execution (spec §7, §8.2).
 
-`LeasePool` is a pure, single-threaded, clock-injected state machine — no Ray,
-no SSH. Phase 4b wraps it in the async HostLease Ray actor and adds the SSH
-reconciliation probe.
+Two concerns live here, both Ray-free so Phase 6 can wrap them:
+
+- The lease state machine: `LeasePool` (pure, single-threaded, clock-injected —
+  no Ray, no SSH), the async `LeaseService` wrapper, and the `reconcile_host`
+  SSH probe (§7.1, §8.2).
+- The host-side attempt driver: `execute_attempt` and its helpers
+  (`secret_env_map`, `HostRuntime`, `build_runner_manifest`), which run one job
+  attempt on one provisioned host over SSH (§7.2–7.9).
+
+Deferred to Phase 6: the Ray task / actor decoration, the retry loop, timeout +
+process termination (§8.1), and `JobResult` assembly. In particular
+`execute_attempt` blocks for the whole job on one SSH call, so the Phase 6
+wrapper must heartbeat the lease concurrently (§7.1/§8.2) — this driver cannot
+beat while blocked.
 """
 
 from __future__ import annotations
@@ -169,6 +180,9 @@ def reconcile_host(transport: Transport, pid_file: str, *, grace_s: float = 10.0
     return terminate_process_group(transport, pgid, grace_s=grace_s)
 
 
+# --- attempt driver (§7.2-7.9) -------------------------------------------------
+
+
 def secret_env_map(project: Project, layout: RemoteLayout) -> dict[str, str]:
     """Map each declared secret's env var to its absolute remote path (spec §4.2).
 
@@ -196,7 +210,6 @@ class HostRuntime:
 def build_runner_manifest(
     job: Job,
     *,
-    run_root: str,
     venv: str,
     run: RunPaths,
     secret_env: Mapping[str, str],
@@ -205,10 +218,13 @@ def build_runner_manifest(
 
     The job argv and env travel as data here; remote_runner Popens argv with no
     shell, prepends venv_bin to PATH, sets VIRTUAL_ENV, and exports secret_env.
+    ``cwd`` is derived from ``run.run_root`` so it can never disagree with where
+    the source is rsync'd; ``venv`` is the immutable env (distinct from the
+    ``run.venv`` symlink that points at it).
     """
     return {
         "argv": list(job.command),
-        "cwd": posixpath.normpath(f"{run_root}/{job.cwd}"),
+        "cwd": posixpath.normpath(f"{run.run_root}/{job.cwd}"),
         "env": dict(job.env),
         "secret_env": dict(secret_env),
         "venv_bin": f"{venv}/bin",
@@ -265,6 +281,9 @@ def execute_attempt(
         "copy source",
     )
     # §7.4 push each input to its explicit (normalized, run-root-relative) destination.
+    # InputSpec.destination is lexically validated (no absolute/`..`) at the model
+    # boundary; remote symlink-escape resolution is not done here — acceptable under
+    # the §13 trusted-job / trusted-source-tree model.
     for inp in job.inputs:
         remote_dest = f"{run.run_root}/{inp.destination}"
         _run_checked(
@@ -277,9 +296,7 @@ def execute_attempt(
         )
         transport.push(local_src, remote_dest)
     # §7.5 write the runner manifest (no shell assembled from user strings).
-    manifest = build_runner_manifest(
-        job, run_root=run.run_root, venv=venv, run=run, secret_env=runtime.secret_env
-    )
+    manifest = build_runner_manifest(job, venv=venv, run=run, secret_env=runtime.secret_env)
     write_remote_file(transport, run.manifest, json.dumps(manifest))
     # §7.6 invoke the versioned runner (it Popens argv, records pid/pgid). No
     # timeout here: enforcement + termination are Phase 6 (§8.1).

@@ -8,7 +8,7 @@ def test_manifest_keys_match_remote_runner():
     job = Job(id="jobA", command=("python", "run.py", "--n", "5"),
               env={"FOO": "bar"}, cwd="sub/dir")
     m = build_runner_manifest(
-        job, run_root=run.run_root, venv="/env/.venv", run=run,
+        job, venv="/env/.venv", run=run,
         secret_env={"GRB_LICENSE_FILE": "/secrets/g.lic"},
     )
     assert m["argv"] == ["python", "run.py", "--n", "5"]
@@ -29,5 +29,5 @@ def test_manifest_keys_match_remote_runner():
 def test_manifest_cwd_dot_is_run_root():
     run = RunPaths("/r/1")
     job = Job(id="j", command=("echo", "hi"))  # cwd defaults to "."
-    m = build_runner_manifest(job, run_root=run.run_root, venv="/v", run=run, secret_env={})
+    m = build_runner_manifest(job, venv="/v", run=run, secret_env={})
     assert m["cwd"] == "/r/1/run"
