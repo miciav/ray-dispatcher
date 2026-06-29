@@ -10,7 +10,7 @@ from __future__ import annotations
 import secrets
 import time
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from .errors import ModelValidationError
 
@@ -103,4 +103,12 @@ class LeasePool:
         if lease is None:
             return False
         self._used[lease.host].discard(lease.slot)
+        return True
+
+    def heartbeat(self, token: str) -> bool:
+        lease = self._leases.get(token)
+        if lease is None:
+            return False
+        now = self._now()
+        self._leases[token] = replace(lease, heartbeat_s=now, expiry_s=now + self._ttl)
         return True
