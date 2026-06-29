@@ -55,6 +55,8 @@ def test_checked_raises_step_error_on_nonzero():
 def test_write_remote_file_is_atomic_tmp_then_mv():
     t = FakeTransport()  # default rc 0
     p = HostProvisioner(t, _project(), _host(), runner_path="x", session_id="s")
-    p._write_remote_file("/home/ubuntu/.ray_dispatcher/projects/dfaas/source-manifest.json", '{"a":1}')
+    p._write_remote_file(
+        "/home/ubuntu/.ray_dispatcher/projects/dfaas/source-manifest.json", '{"a":1}'
+    )
     script = _runs(t)[-1][2]
     assert "printf %s" in script and "source-manifest.json.tmp" in script and "mv -f" in script
