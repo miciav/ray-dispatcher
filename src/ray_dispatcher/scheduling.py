@@ -183,6 +183,8 @@ class LeaseService:
                 lease = self._pool.acquire(attempt_id, exclude=exclude)
                 if lease is not None:
                     return lease
+                if self._pool.healthy_host_count() == 0:
+                    raise NoHealthyHostsError("no healthy hosts remain")
                 await self._cond.wait()
 
     async def release(self, token: str) -> None:
