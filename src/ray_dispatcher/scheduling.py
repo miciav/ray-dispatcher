@@ -7,12 +7,14 @@ reconciliation probe.
 
 from __future__ import annotations
 
+import json
 import secrets
 import time
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 
-from .errors import ModelValidationError
+from .errors import ModelValidationError, NoHealthyHostsError
+from .ssh import Transport, terminate_process_group
 
 
 @dataclass(frozen=True)
@@ -133,3 +135,20 @@ class LeasePool:
 
     def quarantined_hosts(self) -> list[str]:
         return sorted(self._quarantined)
+
+
+def reconcile_host(transport: Transport, pid_file: str, *, grace_s: float = 10.0) -> bool:
+    """Terminate any orphaned process group recorded for a lost attempt (spec §8.2/§8.1).
+
+    Returns True when the host is confirmed clean: no pid file recorded, or the
+    recorded process group is gone after SIGTERM/SIGKILL. Returns False when a pid
+    file exists but cannot be parsed — the host stays quarantined for manual recovery.
+    """
+    result = transport.run(["cat", pid_file])
+    if result.returncode != 0:
+        return True  # no recorded process -> nothing orphaned
+    try:
+        pgid = int(json.loads(result.stdout)["pgid"])
+    except (ValueError, KeyError, TypeError):
+        return False  # recorded but unreadable -> cannot confirm clean
+    return terminate_process_group(transport, pgid, grace_s=grace_s)
