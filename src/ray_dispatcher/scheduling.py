@@ -97,3 +97,10 @@ class LeasePool:
         )
         self._leases[lease.token] = lease
         return lease
+
+    def release(self, token: str) -> bool:
+        lease = self._leases.pop(token, None)
+        if lease is None:
+            return False
+        self._used[lease.host].discard(lease.slot)
+        return True
