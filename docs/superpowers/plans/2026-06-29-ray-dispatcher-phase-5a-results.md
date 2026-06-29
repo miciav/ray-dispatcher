@@ -357,11 +357,18 @@ def test_collect_classifies_missing_required_and_optional(tmp_path):
     assert res.missing_optional == ("missing_opt.txt",)
 
 
-def test_collect_rejects_destination_escaping_staging(tmp_path):
+def test_collect_rejects_destination_symlinked_outside_staging(tmp_path):
+    # OutputSpec.__post_init__ already rejects lexical escapes ('..', absolute),
+    # so this exercises collect_outputs's OWN containment: a lexically-clean
+    # destination that resolves through a symlink OUT of staging (§4.3). Only
+    # ensure_within's filesystem-resolving check catches this.
     staging = tmp_path / "staging"
     staging.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (staging / "evil").symlink_to(outside)  # symlink inside staging -> outside it
     t = FakeTransport()
-    bad = (OutputSpec(source="ok.txt", destination="../escape.txt", required=True),)
+    bad = (OutputSpec(source="ok.txt", destination="evil/escape.txt", required=True),)
     with pytest.raises(PathValidationError):
         collect_outputs(t, "/runs/b/j/1", bad, staging)
 ```
