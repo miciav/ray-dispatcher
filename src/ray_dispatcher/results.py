@@ -110,3 +110,13 @@ def collect_outputs(
         else:
             missing_optional.append(rel)
     return CollectionResult(tuple(present), tuple(missing_required), tuple(missing_optional))
+
+
+def publish_job_outputs(staging_dir: Path, outputs_dir: Path) -> None:
+    """Atomically publish a successful attempt's collected outputs (spec §7.9).
+
+    One success per job: renaming a non-empty staging dir onto an existing
+    non-empty outputs dir raises OSError, so a prior success is never clobbered.
+    """
+    outputs_dir.parent.mkdir(parents=True, exist_ok=True)
+    staging_dir.rename(outputs_dir)  # atomic on the same filesystem
