@@ -7,6 +7,7 @@ reconciliation probe.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import secrets
 import time
@@ -152,3 +153,39 @@ def reconcile_host(transport: Transport, pid_file: str, *, grace_s: float = 10.0
     except (ValueError, KeyError, TypeError):
         return False  # recorded but unreadable -> cannot confirm clean
     return terminate_process_group(transport, pgid, grace_s=grace_s)
+
+
+class LeaseService:
+    """Async wrapper over LeasePool, the body of the Ray HostLease actor (§7.1).
+
+    Pure in-memory async state guarded by one asyncio.Condition — no SSH, so no
+    method blocks the event loop. Phase 6 decorates this class with
+    ``ray.remote(num_cpus=0)``; reconciliation (``reconcile_host``) runs off the
+    actor and reports back via ``mark_reconciled``.
+    """
+
+    def __init__(
+        self,
+        hosts: Mapping[str, int],
+        *,
+        lease_ttl_s: float = 60.0,
+        now: Callable[[], float] = time.monotonic,
+        token_factory: Callable[[], str] = lambda: secrets.token_hex(16),
+    ) -> None:
+        self._pool = LeasePool(
+            hosts, lease_ttl_s=lease_ttl_s, now=now, token_factory=token_factory
+        )
+        self._cond = asyncio.Condition()
+
+    async def acquire(self, attempt_id: str, exclude: Iterable[str] = ()) -> Lease:
+        async with self._cond:
+            while True:
+                lease = self._pool.acquire(attempt_id, exclude=exclude)
+                if lease is not None:
+                    return lease
+                await self._cond.wait()
+
+    async def release(self, token: str) -> None:
+        async with self._cond:
+            self._pool.release(token)
+            self._cond.notify_all()
