@@ -8,11 +8,13 @@ writers; nothing in this module touches Ray.
 from __future__ import annotations
 
 import json
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from enum import Enum
 from pathlib import Path
 
-from .models import AttemptResult, JobResult
+from .models import AttemptResult, JobResult, OutputSpec
+from .paths import ensure_within
+from .ssh import Transport
 
 
 class JobLayout:
@@ -72,3 +74,39 @@ def write_attempt_json(
 def write_result_json(path: Path, result: JobResult) -> None:
     """Write the job's result.json (spec §9.1), including its nested attempts."""
     path.write_text(json.dumps(asdict(result), default=_enc, indent=2))
+
+
+@dataclass(frozen=True)
+class CollectionResult:
+    present: tuple[str, ...]
+    missing_required: tuple[str, ...]
+    missing_optional: tuple[str, ...]
+
+
+def collect_outputs(
+    transport: Transport,
+    remote_run_dir: str,
+    outputs: tuple[OutputSpec, ...],
+    staging_dir: Path,
+) -> CollectionResult:
+    """Best-effort pull of declared outputs into attempt staging (spec §7.8).
+
+    Each output's local destination is contained beneath staging_dir. After the
+    pull, an output absent locally is classified: a missing required output
+    drives OUTPUT_MISSING in the caller; a missing optional one is recorded.
+    """
+    present: list[str] = []
+    missing_required: list[str] = []
+    missing_optional: list[str] = []
+    for spec in outputs:
+        rel = spec.destination or spec.source
+        dest = ensure_within(staging_dir, rel, field="output destination")
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        transport.pull(f"{remote_run_dir}/{spec.source}", str(dest))
+        if dest.exists():
+            present.append(rel)
+        elif spec.required:
+            missing_required.append(rel)
+        else:
+            missing_optional.append(rel)
+    return CollectionResult(tuple(present), tuple(missing_required), tuple(missing_optional))
