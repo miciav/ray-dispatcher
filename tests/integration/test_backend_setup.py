@@ -52,7 +52,7 @@ def test_setup_starts_runtime_with_vm_slot_sum_and_builds_runtimes(monkeypatch):
         assert rt.layout.source == "/home/ubuntu/.ray_dispatcher/projects/dfaas/source"
         assert rt.environment_digest == "env123" and rt.runner_digest
     finally:
-        backend._teardown_runtime_for_test()   # real teardown() arrives in Task 5
+        backend.teardown()
 
 
 def test_setup_propagates_no_healthy_hosts_without_starting_ray(monkeypatch):

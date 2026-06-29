@@ -120,17 +120,6 @@ class SshRayBackend(ExecutionBackend):
             secret_env=secret_env_map(project, layout),
         )
 
-    def _teardown_runtime_for_test(self) -> None:
-        """Minimal runtime release for tests written before Task 5's teardown."""
-        if self._actor is not None:
-            ray.kill(self._actor)
-            self._actor = None
-        if self._outcome is not None:
-            self._outcome.release_all()
-        if self._owns_runtime:
-            ray.shutdown()
-            self._owns_runtime = False
-
     def submit(self, batch_id: str, job: Job) -> JobHandle:
         raise NotImplementedError  # Phase 6c
 
@@ -144,4 +133,13 @@ class SshRayBackend(ExecutionBackend):
         raise NotImplementedError  # Phase 6c
 
     def teardown(self, *, purge: bool = False) -> None:
-        raise NotImplementedError  # Task 5
+        # ponytail: purge + cancel/reconcile of outstanding attempts land in 6c/6d;
+        # this slice does the runtime + lock release (§10.2,4,5).
+        if self._actor is not None:
+            ray.kill(self._actor)
+            self._actor = None
+        if self._outcome is not None:
+            self._outcome.release_all()
+        if self._owns_runtime:
+            ray.shutdown()
+            self._owns_runtime = False
