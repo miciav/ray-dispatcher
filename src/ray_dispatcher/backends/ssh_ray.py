@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import secrets
 import threading
+import uuid
 from collections.abc import Callable, Iterable
 
 import ray
@@ -131,6 +132,7 @@ class SshRayBackend(ExecutionBackend):
         transport_factory: Callable[..., Transport] | None = None,
         retry_policy: RetryPolicy = RetryPolicy(),  # noqa: B008
         min_disk_mb: int = 500,
+        results_dir: str = "./results",
     ) -> None:
         from .. import remote_runner
 
@@ -138,10 +140,13 @@ class SshRayBackend(ExecutionBackend):
         self._transport_factory = transport_factory or _default_transport
         self._retry_policy = retry_policy
         self._min_disk_mb = min_disk_mb
+        self._results_dir = results_dir
         self._owns_runtime = False
         self._actor: ray.actor.ActorHandle | None = None  # type: ignore[type-arg]
         self._outcome: ProvisioningOutcome | None = None
         self._runtimes: dict[str, HostRuntime] = {}
+        self._inv_hosts: dict[str, RemoteHost] = {}
+        self._refs: dict[str, object] = {}
 
     def setup(self, inventory: Inventory, project: Project) -> ProvisioningReport:
         if ray.is_initialized():
@@ -162,6 +167,7 @@ class SshRayBackend(ExecutionBackend):
         inv_hosts = {h.host: h for h in inventory.hosts}
         inv_slots = {name: inv_hosts[name].slots for name in healthy}
         slots = inv_slots  # healthy host -> its slots
+        self._inv_hosts = inv_hosts
         self._runtimes = {
             host_name: self._build_runtime(project, result, inv_hosts[host_name], runner_dig)
             for host_name, result in healthy.items()
@@ -194,16 +200,40 @@ class SshRayBackend(ExecutionBackend):
         )
 
     def submit(self, batch_id: str, job: Job) -> JobHandle:
-        raise NotImplementedError  # Phase 6c
+        token = uuid.uuid4().hex
+        local = JobLayout(self._results_dir, batch_id, job.id)
+        ref = _attempt_task.remote(
+            job, batch_id, local, self._runtimes, self._inv_hosts,
+            self._actor, self._transport_factory, self._retry_policy,
+        )
+        self._refs[token] = ref
+        return JobHandle(batch_id=batch_id, job_id=job.id, token=token)
 
     def status(self, handle: JobHandle) -> JobStatus:
-        raise NotImplementedError  # Phase 6c
+        ref = self._refs.get(handle.token)
+        if ref is None:
+            return JobStatus.PENDING
+        ready, _ = ray.wait([ref], timeout=0)
+        if ready:
+            result: JobResult = ray.get(ref)  # type: ignore[call-overload]
+            return result.status
+        return JobStatus.RUNNING
 
     def cancel(self, handle: JobHandle) -> None:
-        raise NotImplementedError  # Phase 6c
+        ref = self._refs.get(handle.token)
+        if ref is not None:
+            ray.cancel(ref)
 
     def resolve(self, handle: JobHandle) -> JobResult:
-        raise NotImplementedError  # Phase 6c
+        ref = self._refs[handle.token]
+        try:
+            return ray.get(ref)  # type: ignore[call-overload, no-any-return]
+        except ray.exceptions.TaskCancelledError:
+            return JobResult(
+                id=handle.job_id, batch_id=handle.batch_id, status=JobStatus.CANCELLED,
+                returncode=None, duration_s=0.0, host=None, output_dir=None,
+                attempts=(), error="cancelled",
+            )
 
     def teardown(self, *, purge: bool = False) -> None:
         # ponytail: purge + cancel/reconcile of outstanding attempts land in 6c/6d;
