@@ -112,3 +112,19 @@ class LeasePool:
         now = self._now()
         self._leases[token] = replace(lease, heartbeat_s=now, expiry_s=now + self._ttl)
         return True
+
+    def quarantine(self, host: str) -> None:
+        self._quarantined.add(host)
+        for token in [t for t, ls in self._leases.items() if ls.host == host]:
+            lease = self._leases.pop(token)
+            self._used[lease.host].discard(lease.slot)
+
+    def mark_reconciled(self, host: str) -> None:
+        self._quarantined.discard(host)
+
+    def sweep_expired(self) -> list[str]:
+        now = self._now()
+        affected = {ls.host for ls in self._leases.values() if ls.expiry_s < now}
+        for host in affected:
+            self.quarantine(host)
+        return sorted(affected)
