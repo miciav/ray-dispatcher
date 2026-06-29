@@ -16,7 +16,7 @@ def test_lease_holds_all_fields():
 
 def test_lease_is_frozen():
     lease = Lease(token="t", host="a", slot=0, attempt_id="x", expiry_s=1.0, heartbeat_s=0.0)
-    with pytest.raises(Exception):
+    with pytest.raises(AttributeError):
         lease.token = "other"  # type: ignore[misc]
 
 
