@@ -29,7 +29,7 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 
 from .errors import DispatcherError, ModelValidationError, NoHealthyHostsError
-from .models import AttemptResult, FailureKind, Job, JobStatus, Project
+from .models import AttemptResult, FailureKind, Job, JobResult, JobStatus, Project, RetryPolicy
 from .provisioning import RemoteLayout, RunPaths
 from .results import (
     JobLayout,
@@ -337,6 +337,18 @@ def execute_attempt(
         local.attempt_json(attempt), result, missing_optional=collected.missing_optional
     )
     return result
+
+
+def should_retry(policy: RetryPolicy, kind: FailureKind | None, completed_attempts: int) -> bool:
+    """Decide whether to make another attempt after a failure (spec §8.3).
+
+    Retries only a configured-retryable failure kind, and only while attempts
+    remain. Success and non-retryable kinds (COMMAND/OUTPUT_MISSING/TIMEOUT by
+    default) stop immediately.
+    """
+    if kind is None or kind not in policy.retry_on:
+        return False
+    return completed_attempts < policy.max_attempts
 
 
 class LeaseService:
