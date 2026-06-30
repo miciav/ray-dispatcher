@@ -140,6 +140,14 @@ def test_cancel_delegates_to_backend():
     b.cancel.assert_called_once_with(h)
 
 
+def test_running_hosts_delegates_to_backend():
+    b = _mock_backend()
+    b.running_hosts.return_value = {"j1": "10.0.0.1"}
+    d = Dispatcher(_inv(), _proj(), backend=b)
+    assert d.running_hosts() == {"j1": "10.0.0.1"}
+    b.running_hosts.assert_called_once()
+
+
 def test_as_completed_yields_in_completion_order(tmp_path):
     b = _mock_backend()
     # Make status return RUNNING first, then SUCCEEDED on second call per handle
