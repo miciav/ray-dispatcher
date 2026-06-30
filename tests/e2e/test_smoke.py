@@ -25,7 +25,7 @@ def test_dispatcher_run_succeeds_on_real_vms(tmp_path, inventory, synth_project)
         assert r.status == JobStatus.SUCCEEDED, f"job {r.id} failed: {r.error}"
         assert r.returncode == 0
         # result.json written to disk
-        result_json = Path(results_dir) / results[0].batch_id / r.id / "result.json"
+        result_json = Path(results_dir) / r.batch_id / r.id / "result.json"
         assert result_json.exists(), f"result.json missing for {r.id}"
 
 
@@ -46,14 +46,18 @@ def test_dispatcher_setup_is_idempotent(tmp_path, inventory, synth_project):
 @pytest.mark.e2e
 def test_failed_job_returns_failed_status(tmp_path, inventory, synth_project):
     """A job that exits with returncode=1 returns JobStatus.FAILED."""
-    project, proj_dir = synth_project
+    project, _ = synth_project
 
     # Write a config file that tells run.py to fail.
     cfg_path = tmp_path / "fail_cfg.json"
     cfg_path.write_text('{"fail": true}')
 
     results_dir = str(tmp_path / "results")
-    job = Job(id="will-fail", command=("python", "run.py", str(cfg_path)))
+    job = Job(
+        id="will-fail",
+        command=("python", "run.py", "fail_cfg.json"),
+        inputs=(InputSpec(str(cfg_path), destination="fail_cfg.json"),),
+    )
 
     with Dispatcher(inventory, project, results_dir=results_dir) as d:
         d.setup()
@@ -66,15 +70,8 @@ def test_failed_job_returns_failed_status(tmp_path, inventory, synth_project):
 @pytest.mark.e2e
 def test_output_file_collected(tmp_path, inventory, synth_project):
     """A job that writes an output file has it collected to the local results dir."""
-    project, proj_dir = synth_project
+    project, _ = synth_project
     results_dir = str(tmp_path / "results")
-
-    # The job writes "out.txt" in the working dir; we declare it as an OutputSpec.
-    _job = Job(  # ponytail: intentional duplicate — shows shape without cfg vs with cfg
-        id="with-output",
-        command=("python", "run.py"),
-        outputs=(OutputSpec("out.txt", required=True),),
-    )
 
     # Write config so run.py creates out.txt.
     cfg_path = tmp_path / "out_cfg.json"
