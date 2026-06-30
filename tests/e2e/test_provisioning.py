@@ -84,6 +84,9 @@ def test_source_only_change_reuses_env(tmp_path, inventory, synth_project):
     env_digests_1 = {h.host: h.environment_digest for h in report_1.hosts}
     env_digests_2 = {h.host: h.environment_digest for h in report_2.hosts}
     for host in env_digests_1:
+        assert env_digests_1[host] is not None, (
+            f"env_digest is None for {host} — provisioning failed"
+        )
         assert env_digests_1[host] == env_digests_2[host], (
             f"env_digest changed on {host} — expected cache hit"
         )
