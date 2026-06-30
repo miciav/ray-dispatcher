@@ -21,6 +21,9 @@ dev = [
   "ruff>=0.5",
   "types-pyyaml",
 ]
+e2e = [
+  "multipass-sdk @ git+https://github.com/miciav/multipass-sdk.git@83b3704 ; python_version >= '3.11'",
+]
 
 [build-system]
 requires = ["hatchling"]
