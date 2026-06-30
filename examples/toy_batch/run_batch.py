@@ -147,7 +147,7 @@ def main() -> None:
                         detail = "(output not collected)"
                 else:
                     detail = r.error or str(r.status)
-                print(f"{r.job_id:<10} {r.status.value:<12} {detail}")
+                print(f"{r.id:<10} {r.status.value:<12} {detail}")
 
         finally:
             if launched:

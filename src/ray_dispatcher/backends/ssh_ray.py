@@ -176,6 +176,10 @@ class SshRayBackend(ExecutionBackend):
             address="local",
             namespace=f"ray-dispatcher-{secrets.token_hex(8)}",  # unique per session (§3.2.2)
             resources={"vm_slot": float(sum(slots.values()))},
+            # Exclude pyproject.toml / lockfiles from the working_dir package Ray auto-uploads
+            # so workers don't attempt `uv sync` with relative editable paths that only
+            # resolve at the caller's site (e.g. `editable+../../` inside examples/).
+            runtime_env={"excludes": ["pyproject.toml", "uv.lock", "*.lock"]},
         )
         self._owns_runtime = True
         self._actor = HostLease.remote(slots)  # type: ignore[assignment]
