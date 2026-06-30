@@ -1,6 +1,7 @@
 """Multipass e2e provisioning scenario tests — §11 remaining scenarios."""
 
 import shutil
+import subprocess
 import time
 
 import pytest
@@ -95,3 +96,70 @@ def test_source_only_change_reuses_env(tmp_path, inventory, synth_project):
     # (First: install uv + python + uv sync + runner. Second: just rsync source.)
     # Allow 60s to be generous; without sync, expect <30s.
     assert setup_elapsed < 60.0, f"Second setup took {setup_elapsed:.1f}s — expected cache hit"
+
+
+@pytest.mark.e2e
+def test_lockfile_change_rebuilds_env(tmp_path, inventory, synth_project):
+    """Adding a dep + re-locking triggers uv sync; new dep importable in jobs (§11)."""
+    _, proj_dir = synth_project
+
+    mutable_dir = tmp_path / "project_lockchange"
+    shutil.copytree(proj_dir, mutable_dir)
+
+    project = Project(
+        path=str(mutable_dir),
+        project_id="rd-e2e-lockfile-change",
+        python="3.10.0",
+        uv_version="0.11.25",
+    )
+
+    results_dir_1 = str(tmp_path / "results_lc1")
+    job_baseline = Job(id="baseline", command=("python", "run.py"))
+
+    # First run — baseline env
+    report_1 = None
+    with Dispatcher(inventory, project, results_dir=results_dir_1) as d:
+        report_1 = d.setup()
+        r = d.run([job_baseline])
+    assert r[0].status == JobStatus.SUCCEEDED
+
+    # Add tomli dependency and regenerate lockfile
+    pyproject = mutable_dir / "pyproject.toml"
+    content = pyproject.read_text()
+    new_content = content.replace(
+        'version = "0.1.0"\n',
+        'version = "0.1.0"\ndependencies = ["tomli>=2.0,<3"]\n',
+    )
+    pyproject.write_text(new_content)
+    result = subprocess.run(
+        ["uv", "lock", "--project", str(mutable_dir)],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, f"uv lock failed: {result.stderr}"
+
+    # Overwrite run.py to prove the new dep is installed in the rebuilt env
+    (mutable_dir / "run.py").write_text(
+        "import tomli; print('tomli imported ok')\n"
+    )
+
+    results_dir_2 = str(tmp_path / "results_lc2")
+    job_with_dep = Job(id="with-dep", command=("python", "run.py"))
+
+    report_2 = None
+    with Dispatcher(inventory, project, results_dir=results_dir_2) as d:
+        report_2 = d.setup()
+        r2 = d.run([job_with_dep])
+
+    assert r2[0].status == JobStatus.SUCCEEDED, f"job with tomli dep failed: {r2[0].error}"
+
+    # Environment digest must differ (lockfile changed → new env)
+    env_digests_1 = {h.host: h.environment_digest for h in report_1.hosts}
+    env_digests_2 = {h.host: h.environment_digest for h in report_2.hosts}
+    for host in env_digests_1:
+        assert env_digests_1[host] is not None, (
+            f"env_digest is None for {host} — provisioning failed"
+        )
+        assert env_digests_1[host] != env_digests_2[host], (
+            f"env_digest identical on {host} — expected env rebuild after lockfile change"
+        )
