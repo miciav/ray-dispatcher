@@ -578,3 +578,7 @@ class LeaseService:
     async def quarantined_hosts(self) -> list[str]:
         async with self._cond:
             return self._pool.quarantined_hosts()
+
+    async def current_hosts(self) -> dict[str, str]:
+        async with self._cond:
+            return self._pool.current_hosts()
