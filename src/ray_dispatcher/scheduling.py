@@ -253,6 +253,17 @@ def build_runner_manifest(
     }
 
 
+def _kill_remote_pgid(transport: Transport, pid_path: str) -> None:
+    """Best-effort SIGTERM→SIGKILL of the remote process group recorded in pid_path (§8.1)."""
+    try:
+        pgid_info = json.loads(transport.run(["cat", pid_path]).stdout)
+        pgid = int(pgid_info.get("pgid", -1))
+        if pgid > 1:
+            terminate_process_group(transport, pgid, grace_s=10.0)
+    except Exception:
+        pass  # pid file absent or unreadable: nothing to kill
+
+
 def _run_checked(transport: Transport, argv: list[str], what: str) -> CommandResult:
     """Run a library-controlled remote command; raise on nonzero (no user strings)."""
     result = transport.run(argv)
@@ -317,47 +328,47 @@ def execute_attempt(
     write_remote_file(transport, run.manifest, json.dumps(manifest))
     # §7.6 invoke the versioned runner. Timeout enforcement §8.1:
     # run in a daemon thread so we can terminate the remote process if timeout_s elapses.
-    if job.timeout_s is not None:
-        _result: list[CommandResult] = []
-        _exc: list[BaseException] = []
+    # The try/except BaseException also covers cancellation (e.g. Ray's TaskCancelledError):
+    # any interrupt that escapes the invocation triggers a best-effort remote kill (§8.1).
+    try:
+        if job.timeout_s is not None:
+            _result: list[CommandResult] = []
+            _exc: list[BaseException] = []
 
-        def _invoke() -> None:
-            try:
-                _result.append(
-                    _run_checked(transport, ["python3", runner, run.manifest], "invoke runner")
+            def _invoke() -> None:
+                try:
+                    _result.append(
+                        _run_checked(transport, ["python3", runner, run.manifest], "invoke runner")
+                    )
+                except BaseException as e:
+                    _exc.append(e)
+
+            _t = threading.Thread(target=_invoke, daemon=True)
+            _t.start()
+            _t.join(timeout=job.timeout_s)
+
+            if _t.is_alive():
+                # Timed out — best-effort terminate the remote process group (§8.1).
+                _kill_remote_pgid(transport, run.pid)
+                return AttemptResult(
+                    number=attempt,
+                    host=runtime.host,
+                    status=JobStatus.TIMED_OUT,
+                    returncode=None,
+                    duration_s=float(job.timeout_s),
+                    stdout_log=str(local.stdout_log(attempt)),
+                    stderr_log=str(local.stderr_log(attempt)),
+                    failure_kind=FailureKind.TIMEOUT,
+                    error="job timed out",
                 )
-            except BaseException as e:
-                _exc.append(e)
 
-        _t = threading.Thread(target=_invoke, daemon=True)
-        _t.start()
-        _t.join(timeout=job.timeout_s)
-
-        if _t.is_alive():
-            # Timed out — best-effort terminate the remote process group (§8.1).
-            try:
-                pgid_info = json.loads(transport.run(["cat", run.pid]).stdout)
-                pgid = int(pgid_info.get("pgid", -1))
-                if pgid > 1:
-                    terminate_process_group(transport, pgid, grace_s=10.0)
-            except Exception:
-                pass  # best-effort: PID file may not exist yet or process may have exited
-            return AttemptResult(
-                number=attempt,
-                host=runtime.host,
-                status=JobStatus.TIMED_OUT,
-                returncode=None,
-                duration_s=float(job.timeout_s),
-                stdout_log=str(local.stdout_log(attempt)),
-                stderr_log=str(local.stderr_log(attempt)),
-                failure_kind=FailureKind.TIMEOUT,
-                error="job timed out",
-            )
-
-        if _exc:
-            raise _exc[0]  # re-raise SSH/dispatcher exception from the thread
-    else:
-        _run_checked(transport, ["python3", runner, run.manifest], "invoke runner")
+            if _exc:
+                raise _exc[0]  # re-raise SSH/dispatcher exception from the thread
+        else:
+            _run_checked(transport, ["python3", runner, run.manifest], "invoke runner")
+    except BaseException:
+        _kill_remote_pgid(transport, run.pid)
+        raise
     # parse the runner's result.json (returncode + monotonic duration, §7).
     info = json.loads(_run_checked(transport, ["cat", run.result], "read result").stdout)
     returncode = int(info["returncode"])
