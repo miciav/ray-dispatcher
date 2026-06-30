@@ -104,8 +104,10 @@ def collect_outputs(
         dest.parent.mkdir(parents=True, exist_ok=True)
         try:
             transport.pull(f"{remote_run_dir}/{spec.source}", str(dest))
-        except TransportError:
-            pass  # ponytail: rsync exits non-zero when file absent; dest.exists() classifies it
+        except TransportError as exc:
+            # rsync exits 23/24 for "file not found"; re-raise for SSH/network failures
+            if exc.returncode not in {23, 24}:
+                raise
         if dest.exists():
             present.append(rel)
         elif spec.required:

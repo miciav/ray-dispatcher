@@ -52,6 +52,10 @@ class SshConfig:
 class TransportError(DispatcherError):
     """A transport (ssh/rsync) operation failed. Phase 5 maps this to FailureKind.SSH."""
 
+    def __init__(self, message: str, *, returncode: int | None = None) -> None:
+        super().__init__(message)
+        self.returncode: int | None = returncode
+
 
 @dataclass(frozen=True)
 class CommandResult:
@@ -172,7 +176,9 @@ class SshTransport:
         try:
             subprocess.run(argv, check=True, capture_output=True, text=True)
         except subprocess.CalledProcessError as exc:
-            raise TransportError(f"rsync failed ({exc.returncode}): {exc.stderr}") from exc
+            raise TransportError(
+                f"rsync failed ({exc.returncode}): {exc.stderr}", returncode=exc.returncode
+            ) from exc
 
 
 def terminate_process_group(
