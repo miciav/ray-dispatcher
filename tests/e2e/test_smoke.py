@@ -10,7 +10,7 @@ from ray_dispatcher import Dispatcher, InputSpec, Job, JobStatus, OutputSpec
 @pytest.mark.e2e
 def test_dispatcher_run_succeeds_on_real_vms(tmp_path, inventory, synth_project):
     """Provision + run 4 jobs on real VMs; verify all SUCCEEDED with result.json on disk."""
-    project, proj_dir = synth_project
+    project, _ = synth_project
     results_dir = str(tmp_path / "results")
 
     jobs = [Job(id=f"smoke-{i}", command=("python", "run.py")) for i in range(4)]
