@@ -14,7 +14,7 @@ from pathlib import Path
 
 from .models import AttemptResult, JobResult, OutputSpec
 from .paths import ensure_within
-from .ssh import Transport
+from .ssh import Transport, TransportError
 
 
 class JobLayout:
@@ -102,7 +102,10 @@ def collect_outputs(
         rel = spec.destination or spec.source
         dest = ensure_within(staging_dir, rel, field="output destination")
         dest.parent.mkdir(parents=True, exist_ok=True)
-        transport.pull(f"{remote_run_dir}/{spec.source}", str(dest))
+        try:
+            transport.pull(f"{remote_run_dir}/{spec.source}", str(dest))
+        except TransportError:
+            pass  # ponytail: rsync exits non-zero when file absent; dest.exists() classifies it
         if dest.exists():
             present.append(rel)
         elif spec.required:
