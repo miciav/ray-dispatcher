@@ -239,6 +239,11 @@ class SshRayBackend(ExecutionBackend):
                 attempts=(), error="cancelled",
             )
 
+    def running_hosts(self) -> dict[str, str]:
+        if self._actor is None:
+            return {}
+        return ray.get(self._actor.current_hosts.remote())
+
     def teardown(self, *, purge: bool = False) -> None:
         # ponytail: purge + cancel/reconcile of outstanding attempts land in 6c/6d;
         # this slice does the runtime + lock release (§10.2,4,5).
