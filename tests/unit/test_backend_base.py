@@ -11,7 +11,7 @@ def test_cannot_instantiate_abstract_backend():
 
 
 def test_declares_the_spec_3_3_methods():
-    expected = {"setup", "submit", "status", "cancel", "resolve", "teardown"}
+    expected = {"setup", "submit", "status", "cancel", "resolve", "teardown", "running_hosts"}
     assert expected <= set(ExecutionBackend.__abstractmethods__)
 
 
