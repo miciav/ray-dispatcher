@@ -1,0 +1,15 @@
+[project]
+name = "toy-batch"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "ray-dispatcher",
+    "multipass-sdk",
+]
+
+[tool.uv.sources]
+ray-dispatcher = {path = "../..", editable = true}
+multipass-sdk = {git = "https://github.com/miciav/multipass-sdk.git", rev = "83b3704"}
+
+[tool.uv]
+package = false
