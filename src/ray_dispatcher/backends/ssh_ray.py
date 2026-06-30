@@ -11,6 +11,7 @@ import secrets
 import threading
 import uuid
 from collections.abc import Callable, Iterable
+from typing import cast
 
 import ray
 
@@ -242,7 +243,7 @@ class SshRayBackend(ExecutionBackend):
     def running_hosts(self) -> dict[str, str]:
         if self._actor is None:
             return {}
-        return ray.get(self._actor.current_hosts.remote())
+        return cast(dict[str, str], ray.get(self._actor.current_hosts.remote()))
 
     def teardown(self, *, purge: bool = False) -> None:
         # ponytail: purge + cancel/reconcile of outstanding attempts land in 6c/6d;
