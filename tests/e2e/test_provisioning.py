@@ -117,7 +117,6 @@ def test_lockfile_change_rebuilds_env(tmp_path, inventory, synth_project):
     job_baseline = Job(id="baseline", command=("python", "run.py"))
 
     # First run — baseline env
-    report_1 = None
     with Dispatcher(inventory, project, results_dir=results_dir_1) as d:
         report_1 = d.setup()
         r = d.run([job_baseline])
@@ -146,7 +145,6 @@ def test_lockfile_change_rebuilds_env(tmp_path, inventory, synth_project):
     results_dir_2 = str(tmp_path / "results_lc2")
     job_with_dep = Job(id="with-dep", command=("python", "run.py"))
 
-    report_2 = None
     with Dispatcher(inventory, project, results_dir=results_dir_2) as d:
         report_2 = d.setup()
         r2 = d.run([job_with_dep])
@@ -156,9 +154,13 @@ def test_lockfile_change_rebuilds_env(tmp_path, inventory, synth_project):
     # Environment digest must differ (lockfile changed → new env)
     env_digests_1 = {h.host: h.environment_digest for h in report_1.hosts}
     env_digests_2 = {h.host: h.environment_digest for h in report_2.hosts}
+    assert env_digests_1.keys() == env_digests_2.keys(), "host sets differ between runs"
     for host in env_digests_1:
         assert env_digests_1[host] is not None, (
-            f"env_digest is None for {host} — provisioning failed"
+            f"env_digest is None for {host} — first provisioning failed"
+        )
+        assert env_digests_2[host] is not None, (
+            f"env_digest is None for {host} — second provisioning failed"
         )
         assert env_digests_1[host] != env_digests_2[host], (
             f"env_digest identical on {host} — expected env rebuild after lockfile change"
