@@ -105,11 +105,15 @@ def synth_project(tmp_path_factory: pytest.TempPathFactory) -> tuple[Project, Pa
         "[project]\n"
         'name = "synth"\n'
         'version = "0.1.0"\n'
+        'requires-python = ">=3.10"\n'
         "\n"
         "[tool.uv]\n"
         "package = false\n",
         encoding="utf-8",
     )
+
+    # provisioning.environment_digest reads uv.lock; generate it now.
+    subprocess.run(["uv", "lock", "--project", str(proj_dir)], check=True)
 
     (proj_dir / "run.py").write_text(
         "import sys, time, json, pathlib\n"
