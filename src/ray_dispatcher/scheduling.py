@@ -177,6 +177,9 @@ class LeasePool:
     def quarantined_hosts(self) -> list[str]:
         return sorted(self._quarantined)
 
+    def current_hosts(self) -> dict[str, str]:
+        return {ls.attempt_id: ls.host for ls in self._leases.values()}
+
 
 def reconcile_host(transport: Transport, pid_file: str, *, grace_s: float = 10.0) -> bool:
     """Terminate any orphaned process group recorded for a lost attempt (spec §8.2/§8.1).
