@@ -5,6 +5,7 @@ requires-python = ">=3.11"
 dependencies = [
     "ray-dispatcher",
     "multipass-sdk",
+    "pytest",
 ]
 
 [tool.uv.sources]
