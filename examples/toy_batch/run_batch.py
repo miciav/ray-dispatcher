@@ -28,6 +28,7 @@ from ray_dispatcher import (
 HERE = Path(__file__).parent
 EXPERIMENT_DIR = HERE / "experiment"
 CONFIGS_DIR = HERE / "configs"
+RESULTS_DIR = HERE / "results"
 
 N_VMS = 2
 VM_PREFIX = "rd-toy"
@@ -70,7 +71,7 @@ def main() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
         known_hosts = tmp_path / "known_hosts"
-        results_dir = str(tmp_path / "results")
+        results_dir = str(RESULTS_DIR)
 
         try:
             print(f"Launching {N_VMS} VMs...")
@@ -134,7 +135,7 @@ def main() -> None:
 
             elapsed = time.monotonic() - t0
 
-            print(f"\nAll done in {elapsed:.1f}s\n")
+            print(f"\nAll done in {elapsed:.1f}s  |  results: {RESULTS_DIR}\n")
             print(f"{'Job':<10} {'Status':<12} {'Result'}")
             print("-" * 60)
             for r in results:
