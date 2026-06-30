@@ -39,7 +39,7 @@ def test_sum_slots_jobs_run_concurrently(tmp_path, inventory, synth_project):
 
     # ponytail: 20s threshold — concurrent=~11s (3s sleep + SSH overhead), sequential=~40s
     assert elapsed < 20.0, (
-        f"Jobs took {elapsed:.1f}s — expected ~10s for concurrent execution on {n_slots} slots"
+        f"Jobs took {elapsed:.1f}s — expected ~12s for concurrent execution on {n_slots} slots"
         f" (sequential would be ~{n_slots * 10}s)"
     )
 
