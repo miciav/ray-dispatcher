@@ -34,6 +34,7 @@ packages = ["src/ray_dispatcher"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "--ignore=tests/e2e"
 markers = [
   "e2e: opt-in end-to-end tests using multipass-sdk (requires Multipass)",
 ]
