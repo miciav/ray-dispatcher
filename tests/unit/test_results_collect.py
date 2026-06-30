@@ -3,7 +3,7 @@ import pytest
 from ray_dispatcher.errors import PathValidationError
 from ray_dispatcher.models import OutputSpec
 from ray_dispatcher.results import collect_outputs
-from ray_dispatcher.ssh import FakeTransport
+from ray_dispatcher.ssh import FakeTransport, TransportError
 
 
 def _pulls(t):
@@ -46,6 +46,36 @@ def test_collect_classifies_missing_required_and_optional(tmp_path):
     assert res.present == ("present.txt",)
     assert res.missing_required == ("missing_req.txt",)
     assert res.missing_optional == ("missing_opt.txt",)
+
+
+def test_collect_swallows_rsync_file_not_found(tmp_path):
+    """TransportError with returncode 23 (rsync partial transfer) → classified as missing."""
+    staging = tmp_path / "staging"
+    staging.mkdir()
+
+    class _PullRaises(FakeTransport):
+        def pull(self, remote: str, local: str, *, delete: bool = False,
+                 excludes: object = ()) -> None:
+            raise TransportError("rsync failed (23): no such file", returncode=23)
+
+    outputs = (OutputSpec(source="missing.txt", required=True),)
+    res = collect_outputs(_PullRaises(), "/runs/b/j/1", outputs, staging)
+    assert res.missing_required == ("missing.txt",)
+
+
+def test_collect_reraises_ssh_transport_error(tmp_path):
+    """TransportError with returncode != 23/24 (e.g. SSH failure) is re-raised."""
+    staging = tmp_path / "staging"
+    staging.mkdir()
+
+    class _PullRaises(FakeTransport):
+        def pull(self, remote: str, local: str, *, delete: bool = False,
+                 excludes: object = ()) -> None:
+            raise TransportError("rsync failed (255): ssh refused", returncode=255)
+
+    outputs = (OutputSpec(source="out.txt", required=True),)
+    with pytest.raises(TransportError):
+        collect_outputs(_PullRaises(), "/runs/b/j/1", outputs, staging)
 
 
 def test_collect_rejects_destination_symlinked_outside_staging(tmp_path):

@@ -84,6 +84,7 @@ def test_source_only_change_reuses_env(tmp_path, inventory, synth_project):
     # Env digest must be the same (uv sync was skipped)
     env_digests_1 = {h.host: h.environment_digest for h in report_1.hosts}
     env_digests_2 = {h.host: h.environment_digest for h in report_2.hosts}
+    assert env_digests_1.keys() == env_digests_2.keys(), "host sets differ between runs"
     for host in env_digests_1:
         assert env_digests_1[host] is not None, (
             f"env_digest is None for {host} — provisioning failed"
